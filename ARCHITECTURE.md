@@ -55,6 +55,7 @@ type DeploymentDriver interface {
 	Deploy(ctx context.Context, app *models.Application) error
 	Status(ctx context.Context, appName string) (*models.AppStatus, error)
 	Logs(ctx context.Context, appName string, lines int, follow bool) (<-chan string, error)
+	Rollback(ctx context.Context, app *models.Application) error
 	Teardown(ctx context.Context, appName string) error
 }
 
@@ -82,4 +83,13 @@ type CommandExecutor interface {
 | 4 | MCP SDK | Official `modelcontextprotocol/go-sdk` | Most stable, maintained, lightweight Go SDK; maps core methods to JSON-RPC tools for LLMs |
 | 5 | Config scope | Extended `Config` (registry / healthcheck / compose fields) | Avoids uncovered requirements: FR-04 local build needs `Registry/Image/NoCache`, FR-12 needs `HealthCheckPath`, FR-06 needs `ComposeFile` |
 | 6 | Toolchain | Go ≥ 1.27 (`go 1.27` in `go.mod`; system SDK `~/go/go1.27.1` first on `PATH`) | Latest stable at setup; `x/crypto` needs ≥ 1.26 |
+| 7 | Blue-Green opt-in | Direct in-place redeploy by default; Blue-Green via `driver.blue_green` / `deploy --blue-green` | Zero-downtime must not surprise: extra port, backup container, longer pipeline – explicit choice |
+| 8 | Rollback | `Rollback(ctx, app)` on the driver; backup = stopped `[app]-active-previous` kept by Blue-Green deploys, consumed on rollback, purged by teardown | Image-tag juggling needs builder changes; a stopped backup container is driver-local, exact and fast |
+
+## 6. Open Decisions (require a product call – details in `docs/implementation.md §9`)
+
+| # | Question | Why it matters | Proposal |
+|---|----------|----------------|----------|
+| OD-01 | Split container-internal vs host-published ports? | Single `app.port` forces the image to listen on the host port; fixed-port images (nginx:80) can't move | MVP: keep single port + documented constraint; add optional `app.host_port` when a real deploy hits it |
+| OD-02 | How to handle snap-confined dockerd (blind to host `/tmp`)? | Remote builds fail cryptically on snap-docker hosts; managed (apt-docker) hosts unaffected | Keep `EASYDROP_STAGING_BASE` override; add fail-fast detection (scheduled M9) |
 ```
