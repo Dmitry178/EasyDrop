@@ -12,11 +12,11 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 2:** Host Environment Abstraction Layer – DONE (`CommandExecutor` with `Close()`, `SSHExecutor`, `LocalExecutor`, factory; `internal/core/*_test.go` green).
 - [x] **Milestone 3:** Target Environment Autonomic Bootstrapper – DONE (`Bootstrapper` + runtime tag/arch resolution; `bootstrap_test.go` green).
 - [x] **Milestone 4:** Automated Source Compiling Engine – DONE (`RemoteBuilder` + tar.gz archiver with .dockerignore; `builder/*_test.go` green; `LocalBuilder` deferred to M9).
-- [ ] **Milestone 5:** Solo Container Orchestration Driver (`SoloDriver` with Blue-Green logic)
+- [x] **Milestone 5:** Solo Container Orchestration Driver – DONE (`SoloDriver` direct default + opt-in Blue-Green on the {Port, Port+1} pair, backup + `Rollback`, Status/Logs/Teardown; `drivers/solo_test.go` green).
 - [ ] **Milestone 6:** Ingress Networking Infrastructure Layer (`NginxManager` & `CertbotManager`)
 - [ ] **Milestone 7:** Single-binary CLI (`cmd/easydrop`, `cobra` without `viper`, incl. `init`, `deploy`, `status`, `logs`, `mcp-server`)
 - [ ] **Milestone 8:** MCP Server (`easydrop mcp-server` stdio, official `modelcontextprotocol/go-sdk`, tools from `docs/mcp-spec.md`)
-- [ ] **Milestone 9 (deferred):** Compose/Swarm drivers, encrypted server vault (`manage_server` persistence)
+- [ ] **Milestone 9 (deferred):** Compose/Swarm drivers, encrypted server vault (`manage_server` persistence), snap-docker fail-fast detection (OD-02 B-lite). Open product calls live in §9 (OD-01 ports, OD-02 snap-docker).
 
 > Locked decisions (see ARCHITECTURE.md §5): single binary `cmd/easydrop/main.go`;
 > TOML `github.com/pelletier/go-toml/v2`; CLI `cobra` (no `viper`);
@@ -37,7 +37,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] Define `AppConfig` for the `[app]` block: `Name` (string), `Port` (int), `HealthCheckPath` (string, default `"/"`).
 - [x] Define `ServerConfig` for the `[server]` block: `Host` (string), `User` (string), `SSHKey` (string), `Password` (string), `Port` (int).
 - [x] Define `BuildConfig` for the `[build]` block: `Strategy` (`"remote"`|`"local"`), `Registry` (string, for FR-04 local build), `Image` (string), `NoCache` (bool, settable via `deploy --no-cache` flag override).
-- [x] Define `DriverConfig` for the `[driver]` block: `Type` (`"solo"`|`"compose"`|`"swarm"`), `ComposeFile` (string, default `"docker-compose.yml"`, only for `compose`).
+- [x] Define `DriverConfig` for the `[driver]` block: `Type` (`"solo"`|`"compose"`|`"swarm"`), `ComposeFile` (string, default `"docker-compose.yml"`, only for `compose`), `BlueGreen` (bool, default `false` – Blue-Green is opt-in via config or `deploy --blue-green` override).
 - [x] Define `NginxConfig` for the `[nginx]` block: `Domain` (string), `SSL` (bool), `Email` (string, optional – empty means `--register-unsafely-without-email`).
 - [x] Consolidate all configuration maps into a single root structural type named `Config`.
 - [x] Define runtime types: `Application{ Config *Config }` (compiled context passed to drivers) and `AppStatus{ Status, Uptime, SSLStatus }` (returned by `Status`).
@@ -156,7 +156,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] Declare pipeline signature: `Build(ctx context.Context, app *models.Application) error`. The effective no-cache flag is `app.Config.Build.NoCache` (which `deploy --no-cache` overrides to `true` before calling).
 - [x] Validate `app.name` up front against `^[a-z0-9]+(?:[._-][a-z0-9]+)*$` (docker-compatible lowercase) – fails fast with zero host commands instead of a cryptic `docker build -t` rejection.
 - [x] Run local workspace compression workflows (into a `os.CreateTemp` bundle, always removed via defer).
-- [x] Ship the compiled `project.tar.gz` bundle into isolated workspace storage on the host (`/tmp/easydrop/builds/[appName]/`) via `UploadFile` (parent dirs auto-created by both executors).
+- [x] Ship the compiled `project.tar.gz` bundle into isolated workspace storage on the host (`[stagingBase]/builds/[appName]/`, default base `/tmp/easydrop`) via `UploadFile` (parent dirs auto-created by both executors). Escape hatch (locked): env `EASYDROP_STAGING_BASE` overrides the base for hosts where `/tmp` is unsuitable (tiny tmpfs, noexec, snap-confined daemons blind to host `/tmp` – see OD-02 in §9).
 - [x] Trigger remote file unpack sequences via `ExecCommand` (paths quoted via `core.EscapeShellArg`):
   ```bash
   tar -xzf /tmp/easydrop/builds/[appName]/project.tar.gz -C /tmp/easydrop/builds/[appName]/
@@ -173,25 +173,52 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 ## §5. Solo Orchestration Driver Module
 
 ### 5.1. Runtime Deployment Implementation (`internal/core/drivers/solo.go`)
-- [ ] Design `SoloDriver` conforming to the unified abstraction contract `DeploymentDriver`.
-- [ ] Code the `Deploy(ctx context.Context, app *models.Application)` zero-downtime Blue-Green swap sequence:
-- [ ] Evaluate host landscape state. Check for an active running instance named `[appName]-active`.
-- [ ] Offset target port configurations to safely map staging environments (e.g., `app.Port + 1`).
-- [ ] Assemble and execute the deployment instructions for the isolated staging ("green") instance:
+- [x] Design `SoloDriver` conforming to the unified abstraction contract `DeploymentDriver`. Shape (locked):
+  ```go
+  type SoloDriver struct {
+      exec           core.CommandExecutor
+      BlueGreen      bool             // opt-in: config `driver.blue_green`, CLI `--blue-green` forces true
+      Ingress        IngressUpdater // nil = skip traffic reroute (local deploys)
+      Out            io.Writer      // progress log, defaults to os.Stderr
+      ProbeInterval  time.Duration  // default 2s
+      MaxProbes      int            // default 10
+      FollowInterval time.Duration  // follow-poll interval in Logs, default 2s
+  }
+  func NewSoloDriver(exec core.CommandExecutor) *SoloDriver
+  // IngressUpdater (implemented by M6 infra layer):
+  //   UpdateIngress(ctx context.Context, domain string, port int) error
+  ```
+- [x] Shared validation: `models.ValidateAppName` (`internal/models/validate.go`, `^[a-z0-9]+(?:[._-][a-z0-9]+)*$`) is enforced in builder AND driver Deploy/Status/Logs/Teardown/Rollback.
+- [x] `Deploy(ctx, app)` validates, preflights `docker info` (fail fast when the daemon is down), then dispatches by mode. All names/paths quoted via `core.EscapeShellArg`.
+- [x] Direct mode (default, `BlueGreen=false`): best-effort `docker rm -f [app]-active`, then `docker run -d --name [app]-active -p [port]:[port] --restart unless-stopped easydrop/[app]:latest`, probe, ingress update (same port). Probe failure leaves the new container running for inspection and returns an error. No backup is kept.
+- [x] Blue-Green mode (`BlueGreen=true`) zero-downtime swap sequence:
+- [x] Evaluate host landscape state. Check for an active running instance named `[appName]-active` via `docker inspect -f` on `.NetworkSettings.Ports` (missing container = first deploy, not an error).
+- [x] Port scheme (locked): only the pair `{app.Port, app.Port+1}` is ever used. Green stages on whichever is free (active's port + alternation: no active → `app.Port`; active on `app.Port` → `app.Port+1`; active on `app.Port+1` → `app.Port`). Generalizes the spec's `app.Port + 1` example and prevents port leaks. NOTE: single `app.Port` doubles as container-internal and host port – splitting them is open decision OD-01 (§9).
+- [x] Best-effort `docker rm -f [appName]-green` before staging (leftover from a failed deploy), then assemble and execute the deployment instructions for the isolated staging ("green") instance:
   ```bash
   docker run -d --name [appName]-green -p [temp_port]:[app_internal_port] --restart unless-stopped easydrop/[appName]:latest
   ```
-- [ ] Init local probing loops: execute networking diagnostics inside the host context hitting `http://localhost:[temp_port][health_check_path]` (path from `app.Config.App.HealthCheckPath`, default `"/"`) every 2 seconds (up to 10 total validation retries).
-- [ ] If the internal probe captures a valid HTTP `200 OK` handshake, promote the container. Move to ingress traffic rerouting (Nginx updates).
-- [ ] After routing swaps complete, cleanly shut down and purge deprecated host allocations:
+- [x] Init local probing loops: execute networking diagnostics inside the host context hitting `http://localhost:[temp_port][health_check_path]` (path from `app.Config.App.HealthCheckPath`, default `"/"`) every 2 seconds (up to 10 total validation retries) via `curl -fsS -o /dev/null -w '%{http_code}'`, expecting `200`. Any error/non-200 is a miss. `ctx` cancellation aborts the loop.
+- [x] If the internal probe captures a valid HTTP `200 OK` handshake, promote the container. Move to ingress traffic rerouting via `Ingress.UpdateIngress(ctx, domain, greenPort)` (skipped when `Ingress == nil` or domain is empty). Ingress failure rolls back: green is removed, production untouched.
+- [x] After routing swaps complete, retire the old container into the stopped rollback backup (dropping any older backup):
   ```bash
-  docker stop [appName]-active && docker rm [appName]-active
+  docker rm -f [appName]-active-previous
+  docker stop [appName]-active && docker rename [appName]-active [appName]-active-previous
   ```
-- [ ] Promote staging tags into permanent operational roles:
+  (skipped on first deploy – nothing to retire).
+- [x] Promote staging tags into permanent operational roles:
   ```bash
   docker rename [appName]-green [appName]-active
   ```
-- [ ] Rollback Strategy: If internal network validation loops yield failures (timeouts), drop staging modifications (`docker stop [appName]-green && docker rm [appName]-green`) without interfering with production traffic, and terminate with an error status.
+- [x] Rollback Strategy: If internal network validation loops yield failures (timeouts), drop staging modifications (`docker rm -f [appName]-green`) without interfering with production traffic, and terminate with an error status. Post-deploy rollback is the `Rollback` method (§5.3), not container surgery by hand.
+
+### 5.2. Status, Logs, Teardown (`internal/core/drivers/solo.go`, same file)
+- [x] `Status(ctx, appName) (*models.AppStatus, error)`: `docker ps -a --filter 'name=^/[app]-active$' --format "{{.State}}|{{.RunningFor}}"` → running→`Up`, restarting→`Restarting`, anything else/missing→`Down` (uptime from RunningFor). `SSLStatus` stays empty – enriched by the ingress layer (M6).
+- [x] `Logs(ctx, appName, lines, follow) (<-chan string, error)`: `docker logs --tail [lines] [app]-active` split into a buffered channel. `follow=false` closes after the snapshot; `follow=true` polls every `FollowInterval`, emitting only unseen lines (dedup window of last 500) until ctx cancellation – polling (not blocking `docker logs -f`) keeps it ctx-aware on both Local and SSH executors.
+- [x] `Teardown(ctx, appName) error`: `docker rm -f` active + leftover green + rollback backup (`[app]-active-previous`); missing containers are skipped – teardown is idempotent.
+
+### 5.3. Rollback (`Rollback(ctx, app) error`, same file + interface)
+- [x] Contract (locked, part of `DeploymentDriver`): restores the stopped backup kept by the last Blue-Green deploy. Flow: `docker inspect [app]-active-previous` (missing → fail fast with "no rollback backup", zero mutations) → `docker rm -f [app]-active` → `docker rename [app]-active-previous [app]-active` → `docker start [app]-active` → resolve port via inspect (fallback `app.Port`) → ingress update → probe. Consumes the backup: a second rollback reports "no backup" until the next Blue-Green deploy. Probe failure leaves the restored container running (last resort stays up) and returns an error. Direct-mode deploys keep no backup → `Rollback` explains that.
 
 ---
 
@@ -228,10 +255,52 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 
 - [ ] Single binary entry point `cmd/easydrop/main.go` (locked – no `cmd/cli` + `cmd/mcp-server` split; NFR-03).
 - [ ] CLI framework `github.com/spf13/cobra` WITHOUT `viper` (locked – single `easydrop.toml`, cobra flags suffice).
-- [ ] Commands from `docs/cli-spec.md`: `init [--force]`, `deploy [-c/--config] [--no-cache]`, `status`, `logs [app_name] [-f/--follow] [-n/--tail]`, `mcp-server` (hidden/explicit subcommand switching the binary into MCP stdio mode).
+- [ ] Commands from `docs/cli-spec.md`: `init [--force]`, `deploy [-c/--config] [--no-cache] [--blue-green]`, `status`, `logs [app_name] [-f/--follow] [-n/--tail]`, `rollback [app_name]`, `mcp-server` (hidden/explicit subcommand switching the binary into MCP stdio mode).
 
 ## §8. MCP Server (Milestone 8)
 
 - [ ] Serve stdio JSON-RPC via `easydrop mcp-server` using the official `modelcontextprotocol/go-sdk` (locked).
-- [ ] Tools map 1:1 to `docs/mcp-spec.md`: `init_project`, `deploy_app`, `get_status`, `get_logs`, `manage_server`; resources `easydrop://docs/schema` (generated from go-toml/v2 structs) and `easydrop://docs/troubleshooting`.
+- [ ] Tools map 1:1 to `docs/mcp-spec.md`: `init_project`, `deploy_app`, `get_status`, `get_logs`, `rollback_app`, `manage_server`; resources `easydrop://docs/schema` (generated from go-toml/v2 structs) and `easydrop://docs/troubleshooting`.
 - [ ] `manage_server` persistence: MVP = local file store with `0600` permissions; encrypted vault is deferred to Milestone 9.
+
+---
+
+## §9. Open Decisions (require a product call – found during M4/M5 smoke tests)
+
+### OD-01: Split container-internal vs host-published ports?
+- **Context:** `app.port` currently plays two roles: the container's internal
+  listen port AND the managed host-port pair `{Port, Port+1}` (SoloDriver §5).
+  An image with a fixed internal port (e.g. `nginx:80`) cannot be published
+  on a different host port (e.g. host 80 busy → must use 8080).
+- **Affected:** `Config` `[app]` schema, SoloDriver port scheme, Nginx
+  upstream port, `docs/cli-spec.md`, MCP schema resource.
+- **Options:**
+  - **A (status quo):** single `port`. Constraint: the container MUST listen
+    on `app.port`; host `{port, port+1}` must be free. Simplest, enough for MVP.
+  - **B (recommended when needed):** add optional `app.host_port`
+    (default = `port`); managed pair becomes `{host_port, host_port+1}`.
+    Backward compatible, small schema addition.
+- **Status:** OPEN. MVP proceeds with **A** + documented constraint; switch
+  to **B** on the first real deploy that hits it.
+
+### OD-02: How to handle snap-confined Docker daemons?
+- **Context (M4 smoke, Ubuntu 24.04 + snap-docker 29.8.0):** a snap-confined
+  `dockerd` has a private `/tmp`, so the host staging dir `/tmp/easydrop`
+  is invisible to it → `docker build` fails with
+  `unable to prepare context: path ... not found`, while `$HOME` paths work.
+  Apt-installed `dockerd` (the normal VPS case) sees `/tmp` fine.
+- **Impact on the service:** remote builds (FR-03) on snap-docker hosts only.
+  Local builds are unaffected. Hosts provisioned by our Bootstrapper get
+  apt-docker via `get.docker.com`, so managed hosts never hit this.
+- **Already mitigated:** `EASYDROP_STAGING_BASE` env override (§4.2, locked).
+- **Options:**
+  - **A (status quo):** override + docs. Zero code, covers operators who
+    point EasyDrop at a pre-existing snap-docker host.
+  - **B-lite (recommended):** fail-fast detection – if `docker info` shows
+    snap paths (`/var/snap/docker`) or `Ubuntu Core`, abort the build with
+    a clear "snap-docker cannot see host /tmp, set EASYDROP_STAGING_BASE"
+    message instead of the cryptic daemon error. Cheap, prevents confusion.
+  - **C:** default staging to `$HOME/.easydrop/builds`. Rejected for now –
+    weakens the locked `/tmp` default for all hosts to work around one distro quirk.
+- **Status:** OPEN. Proposal: schedule **B-lite** with M6/M9; until then the
+  override + this note are the documented behavior.
