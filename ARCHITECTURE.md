@@ -41,7 +41,7 @@ Because EasyDrop functions as a stateless CLI utility without a persistent daemo
 2. **Fault Tolerance & Rollbacks:** When executing rolling updates via the Solo driver, the engine spins up the incoming container on an ephemeral transient port first, kicks off network validation loops (Health Checks), and safely tears down the legacy active container *only* after ensuring successful staging handshakes and updating active Nginx upstream configurations.
 
 ## 4. Drivers Interface Specification
-Every custom container orchestration module must conform strictly to a unified structural contract written in Go (locked — `Deploy` takes only `*models.Application`; `Logs` covers both MCP slice via channel close and CLI `tail -f` streaming):
+Every custom container orchestration module must conform strictly to a unified structural contract written in Go (locked – `Deploy` takes only `*models.Application`; `Logs` covers both MCP slice via channel close and CLI `tail -f` streaming):
 
 ```go
 package drivers
@@ -61,7 +61,7 @@ type DeploymentDriver interface {
 // CommandExecutor abstracts local vs remote (SSH) host operations.
 // Close() is mandatory to avoid SSH/SFTP connection leaks.
 // Nginx configs are staged via UploadFile to /tmp/easydrop/ and moved
-// atomically with `sudo mv` — never written directly to /etc/nginx.
+// atomically with `sudo mv` – never written directly to /etc/nginx.
 // Certbot without email uses --register-unsafely-without-email.
 type CommandExecutor interface {
 	ExecCommand(ctx context.Context, cmd string) (stdout, stderr string, exitCode int, err error)
@@ -78,7 +78,8 @@ type CommandExecutor interface {
 |---|----------|--------|-----|
 | 1 | Distribution | Single binary `cmd/easydrop/main.go`; MCP mode = `easydrop mcp-server` (stdio) | Two binaries complicate cross-compilation and distribution (NFR-03) |
 | 2 | TOML | `github.com/pelletier/go-toml/v2` | Struct tagging, strict type validation at parse time, JSON-schema generation for the MCP `easydrop://docs/schema` resource |
-| 3 | CLI framework | `cobra`, no `viper` | Industry standard for CLI; `viper` is overkill — all config lives in one `easydrop.toml`, cobra flags suffice |
+| 3 | CLI framework | `cobra`, no `viper` | Industry standard for CLI; `viper` is overkill – all config lives in one `easydrop.toml`, cobra flags suffice |
 | 4 | MCP SDK | Official `modelcontextprotocol/go-sdk` | Most stable, maintained, lightweight Go SDK; maps core methods to JSON-RPC tools for LLMs |
 | 5 | Config scope | Extended `Config` (registry / healthcheck / compose fields) | Avoids uncovered requirements: FR-04 local build needs `Registry/Image/NoCache`, FR-12 needs `HealthCheckPath`, FR-06 needs `ComposeFile` |
+| 6 | Toolchain | Go ≥ 1.26.x (`go 1.26.0` in `go.mod`, `GOTOOLCHAIN=auto`) | `golang.org/x/crypto v0.57.0` (SSH client) requires go ≥ 1.26 |
 ```
