@@ -6,7 +6,7 @@ Single binary `cmd/easydrop/main.go` (see ARCHITECTURE.md §5).
 ## 1. Base Commands & Syntax
 
 ### 1.0. Global flags
-- `-c, --config string`: path to `easydrop.toml` (defaults to `./easydrop.toml`). Applies to `deploy`, `status`, `logs` (and `mcp-server` ignores it — MCP receives `config_path` per call).
+- `-c, --config string`: path to `easydrop.toml` (defaults to `./easydrop.toml`). Applies to `deploy`, `status`, `logs`, `rollback` (and `mcp-server` ignores it – MCP receives `config_path` per call).
 
 ### 1.1. `easydrop init`
 Initializes a new project workspace in the current working directory.
@@ -20,6 +20,7 @@ Triggers the comprehensive application build and deployment pipeline onto the ta
 - **Flags:**
   - `-c, --config string`: Explicit path targeting the custom configuration blueprint file (defaults to `./easydrop.toml`).
   - `--no-cache`: Instruct the host compilation layer to completely bypass the Docker build cache when building the image (overrides `build.no_cache` from `easydrop.toml` to `true` for this run).
+  - `--blue-green`: Enable zero-downtime Blue-Green deployment for this run (overrides `driver.blue_green` from `easydrop.toml` to `true`). Default (flag absent, config false): direct in-place redeploy with brief downtime.
 
 ### 1.3. `easydrop status`
 Queries and displays the active system metrics and health landscapes of the deployed application stack.
@@ -27,12 +28,16 @@ Queries and displays the active system metrics and health landscapes of the depl
 
 ### 1.4. `easydrop logs [app_name]`
 Streams operational container output channels directly into the terminal interface.
-- **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `Logs(ctx, appName, lines, follow)` — `lines` = `--tail`, `follow` = `--follow`.
+- **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `Logs(ctx, appName, lines, follow)` – `lines` = `--tail`, `follow` = `--follow`.
 - **Flags:**
   - `-f, --follow`: Stream live stdout/stderr data logs from the remote host environment in real time (equivalent to `tail -f`).
   - `-n, --tail int`: Number of historical trace log lines to render upon initial attachment (defaults to 100).
 
-### 1.5. `easydrop mcp-server`
+### 1.5. `easydrop rollback [app_name]`
+Restores the stopped backup kept by the last Blue-Green deploy.
+- **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `Rollback(ctx, app)`: removes the failed active, renames `[app]-active-previous` back, starts it, repoints ingress, probes health. Fails fast with "no rollback backup" when no backup exists (direct-mode deploys, fresh hosts) – without touching anything.
+
+### 1.6. `easydrop mcp-server`
 Starts the MCP server in stdio JSON-RPC mode (same binary, see `docs/mcp-spec.md`).
 - **Behavior:** Switches `cmd/easydrop` into server mode speaking MCP over stdio using the official `modelcontextprotocol/go-sdk`. AI clients configure `command: easydrop, args: ["mcp-server"]` (transport `stdio`).
 - **Flags:** none.
