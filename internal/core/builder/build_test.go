@@ -159,6 +159,24 @@ func TestBuildFailureKeepsStaging(t *testing.T) {
 	}
 }
 
+func TestBuildStagingBaseOverride(t *testing.T) {
+	t.Setenv("EASYDROP_STAGING_BASE", "/srv/easydrop")
+	f := &fakeBuildExecutor{script: map[string]error{
+		"tar -xzf '/srv/easydrop/builds/my-api/project.tar.gz' -C '/srv/easydrop/builds/my-api'": nil,
+		"docker build -t 'easydrop/my-api:latest'  '/srv/easydrop/builds/my-api'":                nil,
+		"rm -rf '/srv/easydrop/builds/my-api'":                                                   nil,
+	}}
+	b := NewRemoteBuilder(f)
+	b.SrcDir = fixtureSrc(t)
+	b.Out = &bytes.Buffer{}
+	if err := b.Build(context.Background(), testApp("my-api", false)); err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+	if _, ok := f.uploads["/srv/easydrop/builds/my-api/project.tar.gz"]; !ok {
+		t.Errorf("expected upload under override base, got %v", f.uploads)
+	}
+}
+
 func TestBuildInvalidAppName(t *testing.T) {
 	for _, name := range []string{"", "My-API", "my api", "a/b", "-lead", "UPPER"} {
 		f := &fakeBuildExecutor{script: map[string]error{}}
