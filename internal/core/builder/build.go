@@ -5,16 +5,26 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
+	"strings"
 
 	"easydrop/internal/core"
 	"easydrop/internal/models"
 )
 
-// appNamePattern enforces docker-compatible image names up front so a bad
-// `app.name` fails fast with a clear error instead of a cryptic
-// `docker build -t` rejection on the host.
-var appNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+// stagingBase returns the host staging root. EASYDROP_STAGING_BASE overrides
+// the default /tmp/easydrop for hosts where /tmp is unsuitable (tiny tmpfs,
+// noexec, or container-confined daemons such as snap-docker that cannot see
+// the host /tmp). Trailing slashes are trimmed.
+// stagingBase returns the host staging root. EASYDROP_STAGING_BASE overrides
+// the default /tmp/easydrop for hosts where /tmp is unsuitable (tiny tmpfs,
+// noexec, or container-confined daemons such as snap-docker that cannot see
+// the host /tmp). Trailing slashes are trimmed.
+func stagingBase() string {
+	if base := os.Getenv("EASYDROP_STAGING_BASE"); base != "" {
+		return strings.TrimRight(base, "/")
+	}
+	return "/tmp/easydrop"
+}
 
 // RemoteBuilder ships the local workspace to the host and builds the image
 // there (registry-free flow, FR-03). Progress goes to Out (os.Stderr default).
@@ -45,8 +55,8 @@ func (b *RemoteBuilder) Build(ctx context.Context, app *models.Application) erro
 		return fmt.Errorf("application config is nil")
 	}
 	name := app.Config.App.Name
-	if !appNamePattern.MatchString(name) {
-		return fmt.Errorf("invalid app.name %q: must match %s (docker-compatible, lowercase)", name, appNamePattern)
+	if err := models.ValidateAppName(name); err != nil {
+		return err
 	}
 
 	srcDir := b.SrcDir
@@ -74,7 +84,7 @@ func (b *RemoteBuilder) Build(ctx context.Context, app *models.Application) erro
 		return fmt.Errorf("close temp archive: %w", err)
 	}
 
-	remoteDir := "/tmp/easydrop/builds/" + name
+	remoteDir := stagingBase() + "/builds/" + name
 	remoteArchive := remoteDir + "/" + archiveFileName
 
 	b.logf("uploading to %s...", remoteArchive)
