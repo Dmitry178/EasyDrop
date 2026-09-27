@@ -10,8 +10,8 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 
 - [x] **Milestone 1:** Configuration Parsing Architecture (`internal/config` & `internal/models`) – DONE. Stack: `github.com/pelletier/go-toml/v2`.
 - [x] **Milestone 2:** Host Environment Abstraction Layer – DONE (`CommandExecutor` with `Close()`, `SSHExecutor`, `LocalExecutor`, factory; `internal/core/*_test.go` green).
-- [ ] **Milestone 3:** Target Environment Autonomic Bootstrapper (`Bootstrapper`)
-- [ ] **Milestone 4:** Automated Source Compiling Engine (`RemoteBuilder` + `LocalBuilder`)
+- [x] **Milestone 3:** Target Environment Autonomic Bootstrapper – DONE (`Bootstrapper` + runtime tag/arch resolution; `bootstrap_test.go` green).
+- [x] **Milestone 4:** Automated Source Compiling Engine – DONE (`RemoteBuilder` + tar.gz archiver with .dockerignore; `builder/*_test.go` green; `LocalBuilder` deferred to M9).
 - [ ] **Milestone 5:** Solo Container Orchestration Driver (`SoloDriver` with Blue-Green logic)
 - [ ] **Milestone 6:** Ingress Networking Infrastructure Layer (`NginxManager` & `CertbotManager`)
 - [ ] **Milestone 7:** Single-binary CLI (`cmd/easydrop`, `cobra` without `viper`, incl. `init`, `deploy`, `status`, `logs`, `mcp-server`)
@@ -26,8 +26,8 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 > Nginx upload = stage to `/tmp/easydrop/` + `sudo mv`;
 > Certbot without email = `--register-unsafely-without-email`.
 >
-> Toolchain: Go ≥ 1.26.x (pinned via `go 1.26.0` in `go.mod`; required by
-> `golang.org/x/crypto v0.57.0`. `GOTOOLCHAIN=auto` resolves the SDK automatically).
+> Toolchain: Go ≥ 1.27 (pinned via `go 1.27` in `go.mod`. System install:
+> `~/go/go1.27.1`, first on `PATH` via `~/.bashrc`; `GOTOOLCHAIN=auto` as fallback).
 
 ---
 
@@ -100,46 +100,73 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 ## §3. Environment Autonomic Bootstrapper
 
 ### 3.1. Infrastructure Inspection Pipeline (`internal/core/bootstrapper/bootstrap.go`)
-- [ ] Write `Bootstrapper` logic consuming a generic `CommandExecutor`.
-- [ ] Expose entry execution contract: `Bootstrap(ctx context.Context) error`.
-- [ ] OS Validation: Read `/etc/os-release`. Halt execution if `ID=ubuntu` or `ID=debian` matches fail. (If executing via `LocalExecutor` on macOS/Windows environments, emit a soft diagnostic alert to `stderr` and proceed).
-- [ ] Container Runtime Verification: Assert `docker --version`. If an invocation error returns, push automated install routines:
+- [x] Write `Bootstrapper` logic consuming a generic `CommandExecutor`. Shape (locked):
+  ```go
+  type Bootstrapper struct {
+      exec core.CommandExecutor
+      Out  io.Writer // progress log, defaults to os.Stderr; tests swap in a buffer
+  }
+  func New(exec core.CommandExecutor) *Bootstrapper
+  ```
+- [x] Expose entry execution contract: `Bootstrap(ctx context.Context) error`. Pipeline order: `checkOS → ensureDocker → ensureCompose → ensureDockerGroup → ensureFirewall`.
+- [x] OS Validation: Read `/etc/os-release` via `cat /etc/os-release`. Parse rule: first line with prefix `ID=` (must NOT match `ID_LIKE=`), value lowercased with surrounding quotes trimmed. Halt execution if `ID=ubuntu` or `ID=debian` matches fail. (If executing via `LocalExecutor` on macOS/Windows environments, emit a soft diagnostic alert to `stderr` and proceed).
+- [x] Container Runtime Verification: Assert `docker --version`. If an invocation error returns, push automated install routines:
   ```bash
   curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
   ```
-- [ ] Orchestration Utility Verification: Assert `docker compose version`. If missing, inspect target platform hardware architecture via `uname -m`. Fetch the appropriate binary from upstream GitHub Releases (`github.com/docker/compose`), write into `~/.docker/cli-plugins/docker-compose`, and flags execution rights to `0755`.
-- [ ] Security Privileges Step: Append user scopes to runtime groups: `sudo usermod -aG docker $USER`.
-- [ ] Firewall Provisioning: Detect systemic presence of `ufw`. If active, ensure traffic rule alignment:
+  Re-probe after install; fail if docker is still missing.
+- [x] Orchestration Utility Verification: Assert `docker compose version`. If missing, inspect target platform hardware architecture via `uname -m` (allowlist: `x86_64→x86_64`, `aarch64|arm64→aarch64`, `armv7l→armv7`; anything else errors). Resolve the release tag at runtime from the `/releases/latest` redirect (no hardcoded version):
+  ```bash
+  curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/docker/compose/releases/latest
+  # tag = basename of the returned URL, must match ^v[0-9A-Za-z._-]+$ or abort
+  ```
+  Fetch the appropriate binary from upstream GitHub Releases (`github.com/docker/compose`), write into `~/.docker/cli-plugins/docker-compose`, and flag execution rights to `0755` – as one chain:
+  ```bash
+  mkdir -p ~/.docker/cli-plugins && curl -fsSL -o ~/.docker/cli-plugins/docker-compose https://github.com/docker/compose/releases/download/[tag]/docker-compose-linux-[arch] && chmod 0755 ~/.docker/cli-plugins/docker-compose
+  ```
+  Re-probe `docker compose version` after install; fail if still missing.
+- [x] Security Privileges Step: Append user scopes to runtime groups: `sudo usermod -aG docker $USER`.
+- [x] Firewall Provisioning: Detect systemic presence of `ufw`. If active, ensure traffic rule alignment:
   ```bash
   sudo ufw allow OpenSSH
   sudo ufw allow 'Nginx Full'
   sudo ufw --force enable
   ```
+  Hosts without ufw are skipped. Progress logs go to `Bootstrapper.Out` (default `os.Stderr`).
 
 ---
 
 ## §4. Host Compilation Subsystem (Remote Builder)
 
 ### 4.1. File System Compressor Component (`internal/core/builder/archive.go`)
-- [ ] Construct file directory scanning helpers.
-- [ ] Parse project `.dockerignore` filters if present. Explicitly discard path patterns matching `.git`, `node_modules`, compiled build binaries, and the target archive bundle `project.tar.gz`.
-- [ ] Implement archive consolidation to compress files using `archive/tar` and `compress/gzip`.
+- [x] Construct file directory scanning helpers (`filepath.WalkDir`, modes preserved via `tar.FileInfoHeader`).
+- [x] Parse project `.dockerignore` filters if present (absent file = no rules, not an error). Default excludes (always applied, re-includable via `!`): `.git`, `node_modules`, and the target archive bundle `project.tar.gz` itself. Supported glob syntax: `*`, `?`, `**`, leading `/` (anchored) vs basename (any depth), trailing `/` (dir-only), `!` negation with last-match-wins. Excluded dirs prune the walk (`SkipDir`) – re-including a file inside an excluded dir requires `child/*` + `!child/keep` style rules, not a bare dir rule.
+- [x] Implement archive consolidation to compress files using `archive/tar` and `compress/gzip`. Regular files and dirs only – symlinks/sockets are skipped. Entry point: `CreateProjectArchive(srcDir string, w io.Writer) error`.
 
 ### 4.2. Pipeline Ship & Build Orchestrator (`internal/core/builder/build.go`)
-- [ ] Create `RemoteBuilder` containing an active `CommandExecutor`.
-- [ ] Declare pipeline signature: `Build(ctx context.Context, app *models.Application) error`. The effective no-cache flag is `app.Config.Build.NoCache` (which `deploy --no-cache` overrides to `true` before calling).
-- [ ] Run local workspace compression workflows.
-- [ ] Ship the compiled `project.tar.gz` bundle into isolated workspace storage on the host (`/tmp/easydrop/builds/[appName]/`) via `UploadFile`.
-- [ ] Trigger remote file unpack sequences via `ExecCommand`:
+- [x] Create `RemoteBuilder` containing an active `CommandExecutor`. Shape (locked):
+  ```go
+  type RemoteBuilder struct {
+      exec   core.CommandExecutor
+      SrcDir string    // workspace to archive; empty = process cwd
+      Out    io.Writer // progress log, defaults to os.Stderr
+  }
+  func NewRemoteBuilder(exec core.CommandExecutor) *RemoteBuilder
+  ```
+- [x] Declare pipeline signature: `Build(ctx context.Context, app *models.Application) error`. The effective no-cache flag is `app.Config.Build.NoCache` (which `deploy --no-cache` overrides to `true` before calling).
+- [x] Validate `app.name` up front against `^[a-z0-9]+(?:[._-][a-z0-9]+)*$` (docker-compatible lowercase) – fails fast with zero host commands instead of a cryptic `docker build -t` rejection.
+- [x] Run local workspace compression workflows (into a `os.CreateTemp` bundle, always removed via defer).
+- [x] Ship the compiled `project.tar.gz` bundle into isolated workspace storage on the host (`/tmp/easydrop/builds/[appName]/`) via `UploadFile` (parent dirs auto-created by both executors).
+- [x] Trigger remote file unpack sequences via `ExecCommand` (paths quoted via `core.EscapeShellArg`):
   ```bash
   tar -xzf /tmp/easydrop/builds/[appName]/project.tar.gz -C /tmp/easydrop/builds/[appName]/
   ```
-- [ ] Fire runtime container image compiler jobs on the host terminal scope (append `--no-cache` when the effective no-cache flag is set):
+- [x] Fire runtime container image compiler jobs on the host terminal scope (append `--no-cache` when the effective no-cache flag is set):
   ```bash
   docker build -t easydrop/[appName]:latest /tmp/easydrop/builds/[appName]/
   ```
-- [ ] Purge temporary environment file footprint `/tmp/easydrop/builds/[appName]/` upon successful build execution.
-- [ ] `LocalBuilder` (FR-04, Milestone 9 or with M4): build locally, push to `BuildConfig.Registry`/`Image`, pull on target. Deferred if M4 stays remote-only.
+- [x] Purge temporary environment file footprint `/tmp/easydrop/builds/[appName]/` (`rm -rf`, quoted) upon successful build execution. On build failure the staging dir is intentionally kept for debugging.
+- [ ] `LocalBuilder` (FR-04, Milestone 9 or with M4): build locally, push to `BuildConfig.Registry`/`Image`, pull on target. Deferred – M4 stays remote-only.
 
 ---
 
