@@ -44,4 +44,13 @@ EasyDrop is a lightweight deployment automation tool for shipping Docker applica
 
 - **NFR-01 (Idempotency):** Executing a deployment workflow multiple times without changes must not trigger resource duplication or introduce application downtime.
 - **NFR-02 (Security):** Local storage of server credentials must be isolated and secured against unauthorized access. Private SSH keys and passwords must never be exposed in system logs.
-- **NFR-03 (Portability):** The tool must ship as a single compiled executable supporting Linux, macOS, and Windows across both amd64 and arm64 architectures.
+- **NFR-03 (Portability):** The tool must ship as a single compiled executable supporting Linux, macOS, and Windows across both amd64 and arm64 architectures. The same binary serves CLI and MCP: `easydrop mcp-server` switches it into MCP stdio mode (no separate `easydrop-mcp` binary).
+
+## 4. Locked Tech Decisions (binding; details in ARCHITECTURE.md §5)
+
+- **D-01 Single binary:** `cmd/easydrop/main.go` (CLI via `cobra` without `viper`, MCP via official `modelcontextprotocol/go-sdk`).
+- **D-02 Config parsing:** `github.com/pelletier/go-toml/v2`.
+- **D-03 Extended `easydrop.toml` schema:** FR-04 local builds use `build.registry` / `build.image` / `build.no_cache` (`deploy --no-cache` / `deploy_app.no_cache` override); FR-12 health checks use `app.health_check_path` (default `"/"`); FR-06 compose uses `driver.compose_file` (default `"docker-compose.yml"`).
+- **D-04 Core contracts:** `Deploy(ctx, app *Application)`; `Logs(ctx, appName, lines, follow) (<-chan string, error)` (covers MCP slice + CLI `tail -f`); `CommandExecutor` always has `Close() error`.
+- **D-05 Privileged files & TLS:** Nginx configs are staged to `/tmp/easydrop/` via `UploadFile` then moved with `sudo mv` (never written to `/etc/nginx` directly); empty Certbot email means `--register-unsafely-without-email`; `localhost`/`127.0.0.1` skips Certbot.
+- **D-06 Server store:** `manage_server` MVP persists to a local `0600`-permission file; encrypted vault is deferred.
