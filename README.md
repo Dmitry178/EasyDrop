@@ -6,6 +6,10 @@
 
 It delivers a PaaS-like experience (similar to Railway or Fly.io) on your own infrastructure by combining an orchestrator, a reverse proxy (Nginx), and automated SSL certificate management (Certbot) into a single binary.
 
+**Project Status: Under Active Development**
+> **Note:** EasyDrop is currently an experimental project in its early development phase. Features described below are being actively implemented, and breaking changes may occur frequently. Not production-ready yet!
+
+
 ---
 
 ## Key Features
