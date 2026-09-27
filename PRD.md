@@ -54,3 +54,10 @@ EasyDrop is a lightweight deployment automation tool for shipping Docker applica
 - **D-04 Core contracts:** `Deploy(ctx, app *Application)`; `Logs(ctx, appName, lines, follow) (<-chan string, error)` (covers MCP slice + CLI `tail -f`); `CommandExecutor` always has `Close() error`.
 - **D-05 Privileged files & TLS:** Nginx configs are staged to `/tmp/easydrop/` via `UploadFile` then moved with `sudo mv` (never written to `/etc/nginx` directly); empty Certbot email means `--register-unsafely-without-email`; `localhost`/`127.0.0.1` skips Certbot.
 - **D-06 Server store:** `manage_server` MVP persists to a local `0600`-permission file; encrypted vault is deferred.
+- **D-07 Blue-Green opt-in:** default deploy is direct in-place (brief downtime); zero-downtime Blue-Green swaps require `driver.blue_green = true` or `deploy --blue-green` (`deploy_app.blue_green`).
+- **D-08 Rollback:** Blue-Green deploys keep the retired container stopped as `[app]-active-previous`; `easydrop rollback` / `rollback_app` restores, starts, repoints ingress and probes it, consuming the backup. No backup (direct deploys) → fail-fast error, zero mutations.
+
+## 5. Open Product Decisions (details in ARCHITECTURE.md §6 / `docs/implementation.md` §9)
+
+- **OD-01 Port split:** single `app.port` (container-internal = host) is the MVP constraint – the image must listen on `app.port`. Optional `app.host_port` will be added on the first real deploy that needs it.
+- **OD-02 Snap-docker hosts:** snap-confined daemons cannot see host `/tmp`, breaking remote builds; workaround is `EASYDROP_STAGING_BASE`, fail-fast detection is scheduled (M9). Hosts provisioned by Bootstrapper (apt-docker) are unaffected.
