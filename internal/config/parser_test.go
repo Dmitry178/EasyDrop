@@ -117,6 +117,9 @@ domain = "example.com"
 	if cfg.Driver.Type != "solo" {
 		t.Errorf("Driver.Type = %q, want default %q", cfg.Driver.Type, "solo")
 	}
+	if cfg.Driver.BlueGreen {
+		t.Errorf("Driver.BlueGreen = true, want default false (Blue-Green is opt-in)")
+	}
 	if cfg.App.HealthCheckPath != "/" {
 		t.Errorf("App.HealthCheckPath = %q, want default %q", cfg.App.HealthCheckPath, "/")
 	}
