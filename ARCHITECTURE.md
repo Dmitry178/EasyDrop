@@ -81,5 +81,5 @@ type CommandExecutor interface {
 | 3 | CLI framework | `cobra`, no `viper` | Industry standard for CLI; `viper` is overkill – all config lives in one `easydrop.toml`, cobra flags suffice |
 | 4 | MCP SDK | Official `modelcontextprotocol/go-sdk` | Most stable, maintained, lightweight Go SDK; maps core methods to JSON-RPC tools for LLMs |
 | 5 | Config scope | Extended `Config` (registry / healthcheck / compose fields) | Avoids uncovered requirements: FR-04 local build needs `Registry/Image/NoCache`, FR-12 needs `HealthCheckPath`, FR-06 needs `ComposeFile` |
-| 6 | Toolchain | Go ≥ 1.26.x (`go 1.26.0` in `go.mod`, `GOTOOLCHAIN=auto`) | `golang.org/x/crypto v0.57.0` (SSH client) requires go ≥ 1.26 |
+| 6 | Toolchain | Go ≥ 1.27 (`go 1.27` in `go.mod`; system SDK `~/go/go1.27.1` first on `PATH`) | Latest stable at setup; `x/crypto` needs ≥ 1.26 |
 ```
