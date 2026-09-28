@@ -32,7 +32,7 @@ port = 2222
 strategy = "remote"
 
 [driver]
-type = "solo"
+type = "single"
 
 [nginx]
 domain = "my-project.com"
@@ -114,8 +114,8 @@ domain = "example.com"
 	if cfg.Build.Strategy != "remote" {
 		t.Errorf("Build.Strategy = %q, want default %q", cfg.Build.Strategy, "remote")
 	}
-	if cfg.Driver.Type != "solo" {
-		t.Errorf("Driver.Type = %q, want default %q", cfg.Driver.Type, "solo")
+	if cfg.Driver.Type != "single" {
+		t.Errorf("Driver.Type = %q, want default %q", cfg.Driver.Type, "single")
 	}
 	if cfg.Driver.BlueGreen {
 		t.Errorf("Driver.BlueGreen = true, want default false (Blue-Green is opt-in)")
