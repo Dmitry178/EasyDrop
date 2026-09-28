@@ -157,8 +157,18 @@ func (b *Bootstrapper) ensureCompose(ctx context.Context) error {
 	return nil
 }
 
-// ensureDockerGroup grants the current user access to the docker socket.
+// ensureDockerGroup grants the current user access to the docker socket,
+// skipping the privileged call when already a member (idempotent, and avoids
+// pointless sudo on hosts where access is already arranged).
 func (b *Bootstrapper) ensureDockerGroup(ctx context.Context) error {
+	if out, _, _, err := b.exec.ExecCommand(ctx, "id -nG"); err == nil {
+		for _, g := range strings.Fields(out) {
+			if g == "docker" {
+				b.logf("user already in docker group, skipping")
+				return nil
+			}
+		}
+	}
 	if _, _, _, err := b.exec.ExecCommand(ctx, "sudo usermod -aG docker $USER"); err != nil {
 		return fmt.Errorf("add user to docker group: %w", err)
 	}
