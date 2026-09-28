@@ -30,7 +30,7 @@ easydrop/
 │       ├── builder/          # Image compilation pipelines (Local/Remote blueprints)
 │       ├── drivers/          # Orchestration drivers (Solo, Compose, Swarm structures)
 │       └── infra/            # Ingress management (Nginx & Certbot operations)
-├── templates/                # Systemic configuration blueprints (Nginx, Compose templates)
+├── templates/                # Embedded blueprints: nginx.conf.tmpl + templates.go (package templates, go:embed – embed forbids `..`, so infra imports it as a package)
 └── pkg/                      # Generic utility packages and shared toolsets
 ```
 
