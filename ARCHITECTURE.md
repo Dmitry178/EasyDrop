@@ -28,7 +28,7 @@ easydrop/
 │   └── core/                 # Core business logic layer
 │       ├── bootstrapper/     # Environment verification and Docker/Compose provisioning
 │       ├── builder/          # Image compilation pipelines (Local/Remote blueprints)
-│       ├── drivers/          # Orchestration drivers (Solo, Compose, Swarm structures)
+│       ├── drivers/          # Orchestration drivers (Single, Compose, Swarm structures)
 │       └── infra/            # Ingress management (Nginx & Certbot operations)
 ├── templates/                # Embedded blueprints: nginx.conf.tmpl + templates.go (package templates, go:embed – embed forbids `..`, so infra imports it as a package)
 └── pkg/                      # Generic utility packages and shared toolsets
@@ -38,7 +38,7 @@ easydrop/
 Because EasyDrop functions as a stateless CLI utility without a persistent daemon running on the user's local machine, tracking and anchoring active infrastructure state occurs directly on the targeted remote host.
 
 1. **Source of Truth:** A dedicated runtime file is maintained natively on the target host filesystem under the path `~/.easydrop/state/[app_name].json` to lock operational states.
-2. **Fault Tolerance & Rollbacks:** When executing rolling updates via the Solo driver, the engine spins up the incoming container on an ephemeral transient port first, kicks off network validation loops (Health Checks), and safely tears down the legacy active container *only* after ensuring successful staging handshakes and updating active Nginx upstream configurations.
+2. **Fault Tolerance & Rollbacks:** When executing rolling updates via the Single driver, the engine spins up the incoming container on an ephemeral transient port first, kicks off network validation loops (Health Checks), and safely tears down the legacy active container *only* after ensuring successful staging handshakes and updating active Nginx upstream configurations.
 
 ## 4. Drivers Interface Specification
 Every custom container orchestration module must conform strictly to a unified structural contract written in Go (locked – `Deploy` takes only `*models.Application`; `Logs` covers both MCP slice via channel close and CLI `tail -f` streaming):
