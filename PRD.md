@@ -25,7 +25,7 @@ EasyDrop is a lightweight deployment automation tool for shipping Docker applica
 - **FR-04 (Local Build):** The system must support building images locally, pushing them to a user-defined public or private Docker Registry, and pulling them on the target server.
 
 ### 2.3. Orchestration Modes (Drivers)
-- **FR-05 (Solo):** Provisioning and lifecycle management of isolated, single-container deployments.
+- **FR-05 (Single):** Provisioning and lifecycle management of isolated, single-container deployments.
 - **FR-06 (Compose):** Deploying multi-container applications using standard declarative stack specification files.
 - **FR-07 (Swarm):** Supporting clustered deployment topologies using Docker Swarm for high-availability setups.
 
