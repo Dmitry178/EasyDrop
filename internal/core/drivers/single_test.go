@@ -67,7 +67,7 @@ func (f *queueFake) ran(substr string) bool {
 
 const inspectPrefix = "docker inspect -f"
 
-func soloApp(domain string) *models.Application {
+func singleApp(domain string) *models.Application {
 	return &models.Application{Config: &models.Config{
 		App:   models.AppConfig{Name: "my-api", Port: 8080, HealthCheckPath: "/health"},
 		Nginx: models.NginxConfig{Domain: domain},
@@ -96,10 +96,10 @@ func TestDeployFirstTime(t *testing.T) {
 	f.on("curl ", okResp("200"))
 	f.on("docker rename", okResp(""))
 
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.BlueGreen = true
 	d.Out = &bytes.Buffer{}
-	if err := d.Deploy(context.Background(), soloApp("")); err != nil {
+	if err := d.Deploy(context.Background(), singleApp("")); err != nil {
 		t.Fatalf("Deploy() unexpected error: %v", err)
 	}
 	if !f.ran("-p 8080:8080") {
@@ -123,11 +123,11 @@ func TestDeploySecondTimeAlternatesPort(t *testing.T) {
 	f.on("docker rename", okResp(""))
 
 	ing := &stubIngress{}
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.BlueGreen = true
 	d.Ingress = ing
 	d.Out = &bytes.Buffer{}
-	if err := d.Deploy(context.Background(), soloApp("example.com")); err != nil {
+	if err := d.Deploy(context.Background(), singleApp("example.com")); err != nil {
 		t.Fatalf("Deploy() unexpected error: %v", err)
 	}
 	if !f.ran("-p 8081:8080") {
@@ -155,12 +155,12 @@ func TestDeployProbeFailureKeepsProduction(t *testing.T) {
 	f.on("docker run -d --name 'my-api-green'", okResp("abc123"))
 	f.on("curl ", errRespMsg("500"), errRespMsg("500"), errRespMsg("500"))
 
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.BlueGreen = true
 	d.Out = &bytes.Buffer{}
 	d.MaxProbes = 3
 	d.ProbeInterval = time.Millisecond
-	err := d.Deploy(context.Background(), soloApp("example.com"))
+	err := d.Deploy(context.Background(), singleApp("example.com"))
 	if err == nil {
 		t.Fatalf("Deploy() expected healthcheck error, got nil")
 	}
@@ -184,11 +184,11 @@ func TestDeployIngressFailureRollsBack(t *testing.T) {
 	f.on("curl ", okResp("200"))
 
 	ing := &stubIngress{err: fmt.Errorf("nginx reload failed")}
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.BlueGreen = true
 	d.Ingress = ing
 	d.Out = &bytes.Buffer{}
-	if err := d.Deploy(context.Background(), soloApp("example.com")); err == nil {
+	if err := d.Deploy(context.Background(), singleApp("example.com")); err == nil {
 		t.Fatalf("Deploy() expected ingress error, got nil")
 	}
 	if f.ran("docker stop 'my-api-active'") || f.ran("docker rename") {
@@ -222,7 +222,7 @@ func TestStatusTable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &queueFake{}
 			f.on("docker ps", okResp(tc.psOut))
-			d := NewSoloDriver(f)
+			d := NewSingleDriver(f)
 			st, err := d.Status(context.Background(), "my-api")
 			if err != nil {
 				t.Fatalf("Status() unexpected error: %v", err)
@@ -235,7 +235,7 @@ func TestStatusTable(t *testing.T) {
 }
 
 func TestStatusInvalidName(t *testing.T) {
-	d := NewSoloDriver(&queueFake{})
+	d := NewSingleDriver(&queueFake{})
 	if _, err := d.Status(context.Background(), "BAD NAME"); err == nil {
 		t.Errorf("Status() expected validation error, got nil")
 	}
@@ -252,7 +252,7 @@ func collectLogs(ch <-chan string) []string {
 func TestLogsSnapshot(t *testing.T) {
 	f := &queueFake{}
 	f.on("docker logs", okResp("line1\nline2\nline3\n"))
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	ch, err := d.Logs(context.Background(), "my-api", 100, false)
 	if err != nil {
 		t.Fatalf("Logs() unexpected error: %v", err)
@@ -266,7 +266,7 @@ func TestLogsSnapshot(t *testing.T) {
 func TestLogsFollowStreamsAndStops(t *testing.T) {
 	f := &queueFake{}
 	f.on("docker logs", okResp("a\nb\n"), okResp("a\nb\nc\n"), okResp("a\nb\nc\n"))
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.FollowInterval = 10 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -293,7 +293,7 @@ func TestTeardown(t *testing.T) {
 	f.on("docker inspect 'my-api-green'", errResp()) // no leftover
 	f.on("docker inspect 'my-api-active-previous'", okResp("{}"))
 	f.on("docker rm -f 'my-api-active-previous'", okResp(""))
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.Out = &bytes.Buffer{}
 	if err := d.Teardown(context.Background(), "my-api"); err != nil {
 		t.Fatalf("Teardown() unexpected error: %v", err)
@@ -309,7 +309,7 @@ func TestTeardown(t *testing.T) {
 func TestTeardownIdempotent(t *testing.T) {
 	f := &queueFake{}
 	f.on("docker inspect", errResp(), errResp(), errResp())
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.Out = &bytes.Buffer{}
 	if err := d.Teardown(context.Background(), "my-api"); err != nil {
 		t.Fatalf("Teardown() on empty host must be nil, got: %v", err)
@@ -326,9 +326,9 @@ func TestDeployDirectFirstTime(t *testing.T) {
 	f.on("docker run -d --name 'my-api-active'", okResp("abc123"))
 	f.on("curl ", okResp("200"))
 
-	d := NewSoloDriver(f) // BlueGreen defaults to false
+	d := NewSingleDriver(f) // BlueGreen defaults to false
 	d.Out = &bytes.Buffer{}
-	if err := d.Deploy(context.Background(), soloApp("")); err != nil {
+	if err := d.Deploy(context.Background(), singleApp("")); err != nil {
 		t.Fatalf("Deploy() unexpected error: %v", err)
 	}
 	if !f.ran("-p 8080:8080") {
@@ -349,9 +349,9 @@ func TestDeployDirectReplacesActive(t *testing.T) {
 	f.on("docker run -d --name 'my-api-active'", okResp("abc123"))
 	f.on("curl ", okResp("200"))
 
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.Out = &bytes.Buffer{}
-	if err := d.Deploy(context.Background(), soloApp("")); err != nil {
+	if err := d.Deploy(context.Background(), singleApp("")); err != nil {
 		t.Fatalf("Deploy() unexpected error: %v", err)
 	}
 	if got := countCalls(f.calls, "docker rm -f 'my-api-active'"); got != 1 {
@@ -366,11 +366,11 @@ func TestDeployDirectProbeFailureKeepsContainer(t *testing.T) {
 	f.on("docker run -d --name 'my-api-active'", okResp("abc123"))
 	f.on("curl ", errRespMsg("500"), errRespMsg("500"))
 
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.Out = &bytes.Buffer{}
 	d.MaxProbes = 2
 	d.ProbeInterval = time.Millisecond
-	if err := d.Deploy(context.Background(), soloApp("")); err == nil {
+	if err := d.Deploy(context.Background(), singleApp("")); err == nil {
 		t.Fatalf("Deploy() expected healthcheck error, got nil")
 	}
 	// Only the pre-cleanup removal may run — the failed container stays
@@ -389,9 +389,9 @@ func TestRollbackHappyPath(t *testing.T) {
 	f.on(inspectPrefix, okResp("8081 "))
 	f.on("curl ", okResp("200"))
 
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.Out = &bytes.Buffer{}
-	if err := d.Rollback(context.Background(), soloApp("")); err != nil {
+	if err := d.Rollback(context.Background(), singleApp("")); err != nil {
 		t.Fatalf("Rollback() unexpected error: %v", err)
 	}
 	if !f.ran("docker start 'my-api-active'") {
@@ -403,9 +403,9 @@ func TestRollbackNoBackup(t *testing.T) {
 	f := &queueFake{}
 	f.on("docker inspect 'my-api-active-previous'", errResp())
 
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.Out = &bytes.Buffer{}
-	err := d.Rollback(context.Background(), soloApp(""))
+	err := d.Rollback(context.Background(), singleApp(""))
 	if err == nil {
 		t.Fatalf("Rollback() expected no-backup error, got nil")
 	}
@@ -426,11 +426,11 @@ func TestRollbackProbeFailureKeepsRestored(t *testing.T) {
 	f.on(inspectPrefix, okResp("8081 "))
 	f.on("curl ", errRespMsg("500"), errRespMsg("500"))
 
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.Out = &bytes.Buffer{}
 	d.MaxProbes = 2
 	d.ProbeInterval = time.Millisecond
-	if err := d.Rollback(context.Background(), soloApp("")); err == nil {
+	if err := d.Rollback(context.Background(), singleApp("")); err == nil {
 		t.Fatalf("Rollback() expected healthcheck error, got nil")
 	}
 	// Failed active was removed once; restored container stays up.
@@ -441,7 +441,7 @@ func TestRollbackProbeFailureKeepsRestored(t *testing.T) {
 
 func TestRollbackInvalidName(t *testing.T) {
 	f := &queueFake{}
-	d := NewSoloDriver(f)
+	d := NewSingleDriver(f)
 	d.Out = &bytes.Buffer{}
 	bad := &models.Application{Config: &models.Config{
 		App: models.AppConfig{Name: "BAD NAME", Port: 8080},
