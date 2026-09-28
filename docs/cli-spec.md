@@ -21,6 +21,7 @@ Triggers the comprehensive application build and deployment pipeline onto the ta
   - `-c, --config string`: Explicit path targeting the custom configuration blueprint file (defaults to `./easydrop.toml`).
   - `--no-cache`: Instruct the host compilation layer to completely bypass the Docker build cache when building the image (overrides `build.no_cache` from `easydrop.toml` to `true` for this run).
   - `--blue-green`: Enable zero-downtime Blue-Green deployment for this run (overrides `driver.blue_green` from `easydrop.toml` to `true`). Default (flag absent, config false): direct in-place redeploy with brief downtime.
+  - `--skip-bootstrap`: Skip host provisioning (Bootstrapper). Use when docker is already installed and privileges are arranged (dev boxes without passwordless sudo, CI runners, managed hosts).
 
 ### 1.3. `easydrop status`
 Queries and displays the active system metrics and health landscapes of the deployed application stack.
