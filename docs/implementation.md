@@ -13,7 +13,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 3:** Target Environment Autonomic Bootstrapper – DONE (`Bootstrapper` + runtime tag/arch resolution; `bootstrap_test.go` green).
 - [x] **Milestone 4:** Automated Source Compiling Engine – DONE (`RemoteBuilder` + tar.gz archiver with .dockerignore; `builder/*_test.go` green; `LocalBuilder` deferred to M9).
 - [x] **Milestone 5:** Solo Container Orchestration Driver – DONE (`SoloDriver` direct default + opt-in Blue-Green on the {Port, Port+1} pair, backup + `Rollback`, Status/Logs/Teardown; `drivers/solo_test.go` green).
-- [ ] **Milestone 6:** Ingress Networking Infrastructure Layer (`NginxManager` & `CertbotManager`)
+- [x] **Milestone 6:** Ingress Networking Infrastructure Layer – DONE (`NginxManager.Apply/UpdateIngress` + `CertbotManager.EnableSSL`; `infra/*_test.go` green).
 - [ ] **Milestone 7:** Single-binary CLI (`cmd/easydrop`, `cobra` without `viper`, incl. `init`, `deploy`, `status`, `logs`, `mcp-server`)
 - [ ] **Milestone 8:** MCP Server (`easydrop mcp-server` stdio, official `modelcontextprotocol/go-sdk`, tools from `docs/mcp-spec.md`)
 - [ ] **Milestone 9 (deferred):** Compose/Swarm drivers, encrypted server vault (`manage_server` persistence), snap-docker fail-fast detection (OD-02 B-lite). Open product calls live in §9 (OD-01 ports, OD-02 snap-docker).
@@ -225,22 +225,41 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 ## §6. Ingress Network Management (Nginx & Certbot)
 
 ### 6.1. Reverse Proxy Provisioner Component (`internal/core/infra/nginx.go`)
-- [ ] Compose embeddable base config structures inside `templates/nginx.conf.tmpl` backing reactive upstream updates.
-- [ ] Bind variable states (such as `domain` and `target_port`) leveraging `text/template`.
-- [ ] Deliver compiled reverse proxy settings by STAGING via `UploadFile` to `/tmp/easydrop/nginx/[domain]` first (locked decision – SFTP cannot write to `/etc/nginx` directly), then move atomically:
+- [x] Compose embeddable base config structures inside `templates/nginx.conf.tmpl` backing reactive upstream updates. Embedded via `templates/templates.go` (`package templates`, `//go:embed nginx.conf.tmpl` → `NginxConf string`) – embed patterns forbid `..`, so the template is exposed through a root package instead of a relative path; single binary carries it (NFR-03).
+- [x] Bind variable states (`Domain`, `Port`) leveraging `text/template`. Shape (locked):
+  ```go
+  type NginxManager struct {
+      exec core.CommandExecutor
+      Out  io.Writer // progress log, defaults to os.Stderr
+  }
+  func NewNginxManager(exec core.CommandExecutor) *NginxManager
+  func (m *NginxManager) Apply(ctx context.Context, domain string, port int) error
+  // UpdateIngress(ctx, domain, port) satisfies drivers.IngressUpdater.
+  ```
+  Validation up front (zero host touch on bad input): domain `^(\*\.)?[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*$`, port 1-65535. Rendered to a local temp file (always removed).
+- [x] Deliver compiled reverse proxy settings by STAGING via `UploadFile` to `[stagingBase]/nginx/[domain]` first (locked decision – SFTP cannot write to `/etc/nginx` directly; base from shared `core.StagingBase()`, default `/tmp/easydrop`), then move atomically:
   ```bash
   sudo mv /tmp/easydrop/nginx/[domain] /etc/nginx/sites-available/[domain]
   ```
-- [ ] Bind active deployment paths through symbolic mapping targets via `ExecCommand`:
+- [x] Bind active deployment paths through symbolic mapping targets via `ExecCommand`:
   ```bash
   sudo ln -sf /etc/nginx/sites-available/[domain] /etc/nginx/sites-enabled/
   ```
-- [ ] Run structural routing tests via `sudo nginx -t`. If validations match successfully, apply live settings: `sudo systemctl reload nginx`.
+- [x] Run structural routing tests via `sudo nginx -t`. If validations match successfully, apply live settings: `sudo systemctl reload nginx`. Failed `nginx -t` aborts before reload – previous live config keeps serving.
 
 ### 6.2. Cryptographic TLS Provisioner Component (internal/core/infra/certbot.go)
-- [ ] Expose authorization endpoints: `EnableSSL(ctx context.Context, domain, email string) error`.
-- [ ] Intercept local environment rules: if configuration metrics address `"localhost"` or `"127.0.0.1"`, exit early with a success code (Let's Encrypt does not offer domain validation flows across local network endpoints).
-- [ ] If `email` is empty, provision with `--register-unsafely-without-email` (locked decision):
+- [x] Expose authorization endpoints: `EnableSSL(ctx context.Context, domain, email string) error`. Shape (locked):
+  ```go
+  type CertbotManager struct {
+      exec       core.CommandExecutor
+      serverHost string // localhost targets skip provisioning
+      Out        io.Writer
+  }
+  func NewCertbotManager(exec core.CommandExecutor, serverHost string) *CertbotManager
+  ```
+  Domain validated with the same hostname rule as nginx (zero host touch on bad input).
+- [x] Intercept local environment rules: if configuration metrics address `"localhost"` or `"127.0.0.1"`, exit early with a success code (Let's Encrypt does not offer domain validation flows across local network endpoints).
+- [x] If `email` is empty, provision with `--register-unsafely-without-email` (locked decision):
   ```bash
   sudo certbot --nginx -d [domain] --non-interactive --agree-tos --register-unsafely-without-email
   ```
