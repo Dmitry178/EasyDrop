@@ -32,7 +32,16 @@ func ParseConfig(path string) (*models.Config, error) {
 		return nil, fmt.Errorf("validation error: server.host is required")
 	}
 
-	// --- Defaults ---
+	if err := ApplyDefaults(&cfg); err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
+}
+
+// ApplyDefaults fills fallback defaults and expands server.ssh_key.
+// Exported for the init scaffolding, which builds Config in memory.
+func ApplyDefaults(cfg *models.Config) error {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 22
 	}
@@ -41,7 +50,7 @@ func ParseConfig(path string) (*models.Config, error) {
 	}
 	expanded, err := expandTilde(cfg.Server.SSHKey)
 	if err != nil {
-		return nil, fmt.Errorf("expand server.ssh_key: %w", err)
+		return fmt.Errorf("expand server.ssh_key: %w", err)
 	}
 	cfg.Server.SSHKey = expanded
 
@@ -49,14 +58,14 @@ func ParseConfig(path string) (*models.Config, error) {
 		cfg.Build.Strategy = "remote"
 	}
 	if cfg.Build.Strategy != "remote" && cfg.Build.Strategy != "local" {
-		return nil, fmt.Errorf("validation error: build.strategy must be \"remote\" or \"local\", got %q", cfg.Build.Strategy)
+		return fmt.Errorf("validation error: build.strategy must be \"remote\" or \"local\", got %q", cfg.Build.Strategy)
 	}
 
 	if strings.TrimSpace(cfg.Driver.Type) == "" {
-		cfg.Driver.Type = "solo"
+		cfg.Driver.Type = "single"
 	}
-	if cfg.Driver.Type != "solo" && cfg.Driver.Type != "compose" && cfg.Driver.Type != "swarm" {
-		return nil, fmt.Errorf("validation error: driver.type must be \"solo\", \"compose\" or \"swarm\", got %q", cfg.Driver.Type)
+	if cfg.Driver.Type != "single" && cfg.Driver.Type != "compose" && cfg.Driver.Type != "swarm" {
+		return fmt.Errorf("validation error: driver.type must be \"single\", \"compose\" or \"swarm\", got %q", cfg.Driver.Type)
 	}
 	if cfg.Driver.Type == "compose" && strings.TrimSpace(cfg.Driver.ComposeFile) == "" {
 		cfg.Driver.ComposeFile = "docker-compose.yml"
@@ -66,7 +75,7 @@ func ParseConfig(path string) (*models.Config, error) {
 		cfg.App.HealthCheckPath = "/"
 	}
 
-	return &cfg, nil
+	return nil
 }
 
 // expandTilde expands a leading "~" to the current user's home directory.
