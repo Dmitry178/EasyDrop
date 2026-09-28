@@ -54,8 +54,8 @@ The protocol maps contextual state metrics allowing connected LLM instances to a
 | Tool | Core entrypoint |
 |------|-----------------|
 | `init_project` | config scaffolding (Milestone 7, FR-02) |
-| `deploy_app` | `Bootstrapper.Bootstrap` → builder `Build(ctx, app)` → `SoloDriver.Deploy(ctx, app)` → Nginx/Certbot |
-| `get_status` | `SoloDriver.Status(ctx, appName)` |
-| `get_logs` | `SoloDriver.Logs(ctx, appName, lines, follow)` |
-| `rollback_app` | `SoloDriver.Rollback(ctx, app)` |
+| `deploy_app` | `Bootstrapper.Bootstrap` → builder `Build(ctx, app)` → `SingleDriver.Deploy(ctx, app)` → Nginx/Certbot |
+| `get_status` | `SingleDriver.Status(ctx, appName)` |
+| `get_logs` | `SingleDriver.Logs(ctx, appName, lines, follow)` |
+| `rollback_app` | `SingleDriver.Rollback(ctx, app)` |
 | `manage_server` | local server store (`0600` file; encrypted vault deferred) |
