@@ -31,7 +31,7 @@ type BuildConfig struct {
 }
 
 type DriverConfig struct {
-	Type        string `toml:"type"`                   // "solo", "compose", "swarm", default: "solo"
+	Type        string `toml:"type"`                   // "single", "compose", "swarm", default: "single"
 	ComposeFile string `toml:"compose_file,omitempty"` // Default: "docker-compose.yml"
 	// BlueGreen enables zero-downtime Blue-Green swaps. Default false:
 	// plain deploy stops the old container and starts the new one in place
