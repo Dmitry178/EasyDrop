@@ -5,26 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"easydrop/internal/core"
 	"easydrop/internal/models"
 )
-
-// stagingBase returns the host staging root. EASYDROP_STAGING_BASE overrides
-// the default /tmp/easydrop for hosts where /tmp is unsuitable (tiny tmpfs,
-// noexec, or container-confined daemons such as snap-docker that cannot see
-// the host /tmp). Trailing slashes are trimmed.
-// stagingBase returns the host staging root. EASYDROP_STAGING_BASE overrides
-// the default /tmp/easydrop for hosts where /tmp is unsuitable (tiny tmpfs,
-// noexec, or container-confined daemons such as snap-docker that cannot see
-// the host /tmp). Trailing slashes are trimmed.
-func stagingBase() string {
-	if base := os.Getenv("EASYDROP_STAGING_BASE"); base != "" {
-		return strings.TrimRight(base, "/")
-	}
-	return "/tmp/easydrop"
-}
 
 // RemoteBuilder ships the local workspace to the host and builds the image
 // there (registry-free flow, FR-03). Progress goes to Out (os.Stderr default).
@@ -84,7 +68,7 @@ func (b *RemoteBuilder) Build(ctx context.Context, app *models.Application) erro
 		return fmt.Errorf("close temp archive: %w", err)
 	}
 
-	remoteDir := stagingBase() + "/builds/" + name
+	remoteDir := core.StagingBase() + "/builds/" + name
 	remoteArchive := remoteDir + "/" + archiveFileName
 
 	b.logf("uploading to %s...", remoteArchive)
