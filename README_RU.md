@@ -47,7 +47,7 @@ ssh_key = "~/.ssh/id_rsa"
 strategy = "remote"
 
 [driver]
-type = "solo"
+type = "single"
 
 [nginx]
 domain = "my-project.com"

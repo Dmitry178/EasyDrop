@@ -9,7 +9,6 @@ It delivers a PaaS-like experience (similar to Railway or Fly.io) on your own in
 **Project Status: Under Active Development**
 > **Note:** EasyDrop is currently an experimental project in its early development phase. Features described below are being actively implemented, and breaking changes may occur frequently. Not production-ready yet!
 
-
 ---
 
 ## Key Features
@@ -48,7 +47,7 @@ ssh_key = "~/.ssh/id_rsa"
 strategy = "remote"
 
 [driver]
-type = "solo"
+type = "single"
 
 [nginx]
 domain = "my-project.com"
