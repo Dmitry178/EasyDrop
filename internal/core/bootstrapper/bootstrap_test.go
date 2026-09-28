@@ -286,3 +286,32 @@ func TestParseOSReleaseID(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureDockerGroupSkipsWhenMember(t *testing.T) {
+	f := &fakeExecutor{script: map[string]fakeResult{
+		"id -nG": ok("dm sudo docker\n"),
+	}}
+	b := New(f)
+	b.Out = &bytes.Buffer{}
+	if err := b.ensureDockerGroup(context.Background()); err != nil {
+		t.Fatalf("ensureDockerGroup() unexpected error: %v", err)
+	}
+	if f.ran("usermod") {
+		t.Errorf("usermod must be skipped for group members, ran: %v", f.calls)
+	}
+}
+
+func TestEnsureDockerGroupAddsWhenMissing(t *testing.T) {
+	f := &fakeExecutor{script: map[string]fakeResult{
+		"id -nG":                        ok("dm sudo\n"),
+		"sudo usermod -aG docker $USER": ok(""),
+	}}
+	b := New(f)
+	b.Out = &bytes.Buffer{}
+	if err := b.ensureDockerGroup(context.Background()); err != nil {
+		t.Fatalf("ensureDockerGroup() unexpected error: %v", err)
+	}
+	if !f.ran("sudo usermod -aG docker $USER") {
+		t.Errorf("usermod must run for non-members, ran: %v", f.calls)
+	}
+}
