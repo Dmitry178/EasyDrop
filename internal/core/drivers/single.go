@@ -16,7 +16,7 @@ import (
 // DeploymentDriver is the unified orchestration contract (locked in
 // ARCHITECTURE.md §4). Logs covers both the MCP slice (channel drained to a
 // list) and CLI tail -f streaming. Rollback restores the pre-deploy backup
-// kept by Blue-Green deploys (see SoloDriver).
+// kept by Blue-Green deploys (see SingleDriver).
 type DeploymentDriver interface {
 	Deploy(ctx context.Context, app *models.Application) error
 	Status(ctx context.Context, appName string) (*models.AppStatus, error)
@@ -40,7 +40,7 @@ const (
 	followDedupWindow    = 500
 )
 
-// SoloDriver manages isolated single-container deployments in two modes.
+// SingleDriver manages isolated single-container deployments in two modes.
 //
 // Direct mode (BlueGreen=false, default): stop the old container (if any)
 // and start the new one in place on app.Port — simple, with brief downtime.
@@ -52,7 +52,7 @@ const (
 // [app]-active-previous — the rollback backup consumed by Rollback.
 //
 // Progress goes to Out (os.Stderr default).
-type SoloDriver struct {
+type SingleDriver struct {
 	exec core.CommandExecutor
 	// BlueGreen selects the deploy mode; orchestration sets it from
 	// `driver.blue_green` (CLI --blue-green forces true).
@@ -67,30 +67,30 @@ type SoloDriver struct {
 	FollowInterval time.Duration
 }
 
-// NewSoloDriver creates a driver bound to the given executor.
-func NewSoloDriver(exec core.CommandExecutor) *SoloDriver {
-	return &SoloDriver{exec: exec, Out: os.Stderr}
+// NewSingleDriver creates a driver bound to the given executor.
+func NewSingleDriver(exec core.CommandExecutor) *SingleDriver {
+	return &SingleDriver{exec: exec, Out: os.Stderr}
 }
 
-func (d *SoloDriver) logf(format string, args ...any) {
-	fmt.Fprintf(d.Out, "easydrop: solo: "+format+"\n", args...)
+func (d *SingleDriver) logf(format string, args ...any) {
+	fmt.Fprintf(d.Out, "easydrop: single: "+format+"\n", args...)
 }
 
-func (d *SoloDriver) probeInterval() time.Duration {
+func (d *SingleDriver) probeInterval() time.Duration {
 	if d.ProbeInterval > 0 {
 		return d.ProbeInterval
 	}
 	return defaultProbeInterval
 }
 
-func (d *SoloDriver) maxProbes() int {
+func (d *SingleDriver) maxProbes() int {
 	if d.MaxProbes > 0 {
 		return d.MaxProbes
 	}
 	return defaultMaxProbes
 }
 
-func (d *SoloDriver) followInterval() time.Duration {
+func (d *SingleDriver) followInterval() time.Duration {
 	if d.FollowInterval > 0 {
 		return d.FollowInterval
 	}
@@ -111,7 +111,7 @@ func backupName(appName string) string { return appName + "-active-previous" }
 // Deploy validates the app and dispatches to the configured mode:
 // direct in-place redeploy by default, zero-downtime Blue-Green swap when
 // BlueGreen is set.
-func (d *SoloDriver) Deploy(ctx context.Context, app *models.Application) error {
+func (d *SingleDriver) Deploy(ctx context.Context, app *models.Application) error {
 	if app == nil || app.Config == nil {
 		return fmt.Errorf("application config is nil")
 	}
@@ -130,7 +130,7 @@ func (d *SoloDriver) Deploy(ctx context.Context, app *models.Application) error 
 // deployDirect stops the old container (if any) and starts the new one in
 // place on app.Port. Brief downtime, no backup kept: probe failure leaves the
 // new container running for inspection and returns an error.
-func (d *SoloDriver) deployDirect(ctx context.Context, app *models.Application) error {
+func (d *SingleDriver) deployDirect(ctx context.Context, app *models.Application) error {
 	cfg := app.Config
 	name, port := cfg.App.Name, cfg.App.Port
 	active := activeName(name)
@@ -157,7 +157,7 @@ func (d *SoloDriver) deployDirect(ctx context.Context, app *models.Application) 
 // to the stopped backup ([app]-active-previous, dropping any older backup) →
 // rename green to active. Probe or ingress failure removes green and keeps
 // production untouched.
-func (d *SoloDriver) deployBlueGreen(ctx context.Context, app *models.Application) error {
+func (d *SingleDriver) deployBlueGreen(ctx context.Context, app *models.Application) error {
 	cfg := app.Config
 	name, internalPort := cfg.App.Name, cfg.App.Port
 	active, green, backup := activeName(name), greenName(name), backupName(name)
@@ -209,7 +209,7 @@ func (d *SoloDriver) deployBlueGreen(ctx context.Context, app *models.Applicatio
 }
 
 // updateIngress reroutes traffic unless no ingress is configured.
-func (d *SoloDriver) updateIngress(ctx context.Context, domain string, port int) error {
+func (d *SingleDriver) updateIngress(ctx context.Context, domain string, port int) error {
 	if d.Ingress == nil || strings.TrimSpace(domain) == "" {
 		d.logf("no ingress configured, skipping traffic reroute")
 		return nil
@@ -224,7 +224,7 @@ func (d *SoloDriver) updateIngress(ctx context.Context, domain string, port int)
 // next Blue-Green deploy. Probe failure leaves the restored container running
 // and returns an error. Without a backup (direct deploys, fresh hosts) it
 // fails fast with zero host mutations beyond the existence check.
-func (d *SoloDriver) Rollback(ctx context.Context, app *models.Application) error {
+func (d *SingleDriver) Rollback(ctx context.Context, app *models.Application) error {
 	if app == nil || app.Config == nil {
 		return fmt.Errorf("application config is nil")
 	}
@@ -267,7 +267,7 @@ func (d *SoloDriver) Rollback(ctx context.Context, app *models.Application) erro
 
 // containerHostPort returns the published host port of containerName for the
 // given internal port, or 0 when the container does not exist.
-func (d *SoloDriver) containerHostPort(ctx context.Context, containerName string, internalPort int) (int, error) {
+func (d *SingleDriver) containerHostPort(ctx context.Context, containerName string, internalPort int) (int, error) {
 	out, _, _, err := d.exec.ExecCommand(ctx,
 		"docker inspect -f '{{range $p, $c := .NetworkSettings.Ports}}{{if $c}}{{(index $c 0).HostPort}} {{end}}{{end}}' "+q(containerName))
 	if err != nil {
@@ -285,7 +285,7 @@ func (d *SoloDriver) containerHostPort(ctx context.Context, containerName string
 // attempts run out. Any error or non-200 is a miss, not a failure. role
 // labels the container under test in messages ("staging", "active",
 // "restored").
-func (d *SoloDriver) probe(ctx context.Context, port int, healthPath, role string) error {
+func (d *SingleDriver) probe(ctx context.Context, port int, healthPath, role string) error {
 	if healthPath == "" {
 		healthPath = "/"
 	}
@@ -324,7 +324,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // Restarting, anything else (or missing) → Down. Uptime comes from
 // `docker ps` RunningFor. SSLStatus is left empty — the ingress layer (M6)
 // enriches it once certificates are managed.
-func (d *SoloDriver) Status(ctx context.Context, appName string) (*models.AppStatus, error) {
+func (d *SingleDriver) Status(ctx context.Context, appName string) (*models.AppStatus, error) {
 	if err := models.ValidateAppName(appName); err != nil {
 		return nil, err
 	}
@@ -358,7 +358,7 @@ func (d *SoloDriver) Status(ctx context.Context, appName string) (*models.AppSta
 // polls every 2s emitting only unseen lines (dedup window of the last 500)
 // until ctx is cancelled — polling stays ctx-aware on both local and SSH
 // executors, where a blocking `docker logs -f` session could not be stopped.
-func (d *SoloDriver) Logs(ctx context.Context, appName string, lines int, follow bool) (<-chan string, error) {
+func (d *SingleDriver) Logs(ctx context.Context, appName string, lines int, follow bool) (<-chan string, error) {
 	if err := models.ValidateAppName(appName); err != nil {
 		return nil, err
 	}
@@ -410,7 +410,7 @@ func (d *SoloDriver) Logs(ctx context.Context, appName string, lines int, follow
 
 // Teardown force-removes active, any leftover green, and the rollback backup.
 // Missing containers are not an error — teardown is idempotent.
-func (d *SoloDriver) Teardown(ctx context.Context, appName string) error {
+func (d *SingleDriver) Teardown(ctx context.Context, appName string) error {
 	if err := models.ValidateAppName(appName); err != nil {
 		return err
 	}
