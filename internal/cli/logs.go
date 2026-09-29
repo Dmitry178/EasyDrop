@@ -9,8 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"easydrop/internal/core"
-	"easydrop/internal/core/drivers"
+	"easydrop/internal/deploy"
 )
 
 func logsCmd() *cobra.Command {
@@ -22,35 +21,21 @@ func logsCmd() *cobra.Command {
 		Short: "Show or stream container logs",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			cfg, err := loadConfig(configPath)
-			if err != nil {
-				return err
-			}
 			var arg string
 			if len(args) == 1 {
 				arg = args[0]
 			}
-			name, err := resolveAppName(arg, cfg)
-			if err != nil {
-				return err
-			}
-			ex, err := core.NewExecutor(&cfg.Server)
-			if err != nil {
-				return err
-			}
-			defer ex.Close()
-
 			ctx := context.Background()
 			if follow {
 				var stop context.CancelFunc
 				ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 				defer stop()
 			}
-			ch, err := drivers.NewSingleDriver(ex).Logs(ctx, name, tail, follow)
+			lines, err := deploy.Logs(ctx, configPath, arg, tail, follow, 0)
 			if err != nil {
 				return err
 			}
-			for line := range ch {
+			for _, line := range lines {
 				fmt.Println(line)
 			}
 			return nil
