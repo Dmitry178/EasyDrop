@@ -12,9 +12,9 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 2:** Host Environment Abstraction Layer – DONE (`CommandExecutor` with `Close()`, `SSHExecutor`, `LocalExecutor`, factory; `internal/core/*_test.go` green).
 - [x] **Milestone 3:** Target Environment Autonomic Bootstrapper – DONE (`Bootstrapper` + runtime tag/arch resolution; `bootstrap_test.go` green).
 - [x] **Milestone 4:** Automated Source Compiling Engine – DONE (`RemoteBuilder` + tar.gz archiver with .dockerignore; `builder/*_test.go` green; `LocalBuilder` deferred to M9).
-- [x] **Milestone 5:** Solo Container Orchestration Driver – DONE (`SoloDriver` direct default + opt-in Blue-Green on the {Port, Port+1} pair, backup + `Rollback`, Status/Logs/Teardown; `drivers/solo_test.go` green).
+- [x] **Milestone 5:** Single Container Orchestration Driver – DONE (`SingleDriver` direct default + opt-in Blue-Green on the {Port, Port+1} pair, backup + `Rollback`, Status/Logs/Teardown; `drivers/single_test.go` green).
 - [x] **Milestone 6:** Ingress Networking Infrastructure Layer – DONE (`NginxManager.Apply/UpdateIngress` + `CertbotManager.EnableSSL`; `infra/*_test.go` green).
-- [ ] **Milestone 7:** Single-binary CLI (`cmd/easydrop`, `cobra` without `viper`, incl. `init`, `deploy`, `status`, `logs`, `mcp-server`)
+- [x] **Milestone 7:** Single-binary CLI – DONE (`cmd/easydrop` + `internal/cli` + `config.Scaffold`; real localhost deploy/status/logs/BG/rollback verified via built binary).
 - [ ] **Milestone 8:** MCP Server (`easydrop mcp-server` stdio, official `modelcontextprotocol/go-sdk`, tools from `docs/mcp-spec.md`)
 - [ ] **Milestone 9 (deferred):** Compose/Swarm drivers, encrypted server vault (`manage_server` persistence), snap-docker fail-fast detection (OD-02 B-lite). Open product calls live in §9 (OD-01 ports, OD-02 snap-docker).
 
@@ -37,7 +37,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] Define `AppConfig` for the `[app]` block: `Name` (string), `Port` (int), `HealthCheckPath` (string, default `"/"`).
 - [x] Define `ServerConfig` for the `[server]` block: `Host` (string), `User` (string), `SSHKey` (string), `Password` (string), `Port` (int).
 - [x] Define `BuildConfig` for the `[build]` block: `Strategy` (`"remote"`|`"local"`), `Registry` (string, for FR-04 local build), `Image` (string), `NoCache` (bool, settable via `deploy --no-cache` flag override).
-- [x] Define `DriverConfig` for the `[driver]` block: `Type` (`"solo"`|`"compose"`|`"swarm"`), `ComposeFile` (string, default `"docker-compose.yml"`, only for `compose`), `BlueGreen` (bool, default `false` – Blue-Green is opt-in via config or `deploy --blue-green` override).
+- [x] Define `DriverConfig` for the `[driver]` block: `Type` (`"single"`|`"compose"`|`"swarm"`), `ComposeFile` (string, default `"docker-compose.yml"`, only for `compose`), `BlueGreen` (bool, default `false` – Blue-Green is opt-in via config or `deploy --blue-green` override).
 - [x] Define `NginxConfig` for the `[nginx]` block: `Domain` (string), `SSL` (bool), `Email` (string, optional – empty means `--register-unsafely-without-email`).
 - [x] Consolidate all configuration maps into a single root structural type named `Config`.
 - [x] Define runtime types: `Application{ Config *Config }` (compiled context passed to drivers) and `AppStatus{ Status, Uptime, SSLStatus }` (returned by `Status`).
@@ -45,12 +45,12 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 ### 1.2. Configuration Parser Engine (`internal/config/parser.go`)
 - [x] Import `github.com/pelletier/go-toml/v2` (locked; NOT `BurntSushi/toml` – go-toml/v2 gives better struct tagging, strict type validation, and JSON-schema generation for the MCP `easydrop://docs/schema` resource).
 - [x] Implement signature: `ParseConfig(path string) (*models.Config, error)`.
-- [x] Enforce field validations: return explicit errors if `app.name` or `server.host` are omitted; `build.strategy` must be `"remote"`|`"local"`; `driver.type` must be `"solo"`|`"compose"`|`"swarm"`.
+- [x] Enforce field validations: return explicit errors if `app.name` or `server.host` are omitted; `build.strategy` must be `"remote"`|`"local"`; `driver.type` must be `"single"`|`"compose"`|`"swarm"`.
 - [x] Implement fallback defaults for optional properties:
   - `server.port` = `22`
   - `server.ssh_key` = `~/.ssh/id_rsa` (ensure tilde `~` expansion to absolute system paths).
   - `build.strategy` = `"remote"`
-  - `driver.type` = `"solo"`
+  - `driver.type` = `"single"`
   - `driver.compose_file` = `"docker-compose.yml"` (only when `driver.type == "compose"`)
   - `app.health_check_path` = `"/"`
 
@@ -170,12 +170,12 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 
 ---
 
-## §5. Solo Orchestration Driver Module
+## §5. Single Orchestration Driver Module
 
-### 5.1. Runtime Deployment Implementation (`internal/core/drivers/solo.go`)
-- [x] Design `SoloDriver` conforming to the unified abstraction contract `DeploymentDriver`. Shape (locked):
+### 5.1. Runtime Deployment Implementation (`internal/core/drivers/single.go`)
+- [x] Design `SingleDriver` conforming to the unified abstraction contract `DeploymentDriver`. Shape (locked):
   ```go
-  type SoloDriver struct {
+  type SingleDriver struct {
       exec           core.CommandExecutor
       BlueGreen      bool             // opt-in: config `driver.blue_green`, CLI `--blue-green` forces true
       Ingress        IngressUpdater // nil = skip traffic reroute (local deploys)
@@ -184,7 +184,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
       MaxProbes      int            // default 10
       FollowInterval time.Duration  // follow-poll interval in Logs, default 2s
   }
-  func NewSoloDriver(exec core.CommandExecutor) *SoloDriver
+  func NewSingleDriver(exec core.CommandExecutor) *SingleDriver
   // IngressUpdater (implemented by M6 infra layer):
   //   UpdateIngress(ctx context.Context, domain string, port int) error
   ```
@@ -212,7 +212,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
   ```
 - [x] Rollback Strategy: If internal network validation loops yield failures (timeouts), drop staging modifications (`docker rm -f [appName]-green`) without interfering with production traffic, and terminate with an error status. Post-deploy rollback is the `Rollback` method (§5.3), not container surgery by hand.
 
-### 5.2. Status, Logs, Teardown (`internal/core/drivers/solo.go`, same file)
+### 5.2. Status, Logs, Teardown (`internal/core/drivers/single.go`, same file)
 - [x] `Status(ctx, appName) (*models.AppStatus, error)`: `docker ps -a --filter 'name=^/[app]-active$' --format "{{.State}}|{{.RunningFor}}"` → running→`Up`, restarting→`Restarting`, anything else/missing→`Down` (uptime from RunningFor). `SSLStatus` stays empty – enriched by the ingress layer (M6).
 - [x] `Logs(ctx, appName, lines, follow) (<-chan string, error)`: `docker logs --tail [lines] [app]-active` split into a buffered channel. `follow=false` closes after the snapshot; `follow=true` polls every `FollowInterval`, emitting only unseen lines (dedup window of last 500) until ctx cancellation – polling (not blocking `docker logs -f`) keeps it ctx-aware on both Local and SSH executors.
 - [x] `Teardown(ctx, appName) error`: `docker rm -f` active + leftover green + rollback backup (`[app]-active-previous`); missing containers are skipped – teardown is idempotent.
@@ -272,9 +272,12 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 
 ## §7. Single-Binary CLI (`cmd/easydrop`, Milestone 7)
 
-- [ ] Single binary entry point `cmd/easydrop/main.go` (locked – no `cmd/cli` + `cmd/mcp-server` split; NFR-03).
-- [ ] CLI framework `github.com/spf13/cobra` WITHOUT `viper` (locked – single `easydrop.toml`, cobra flags suffice).
-- [ ] Commands from `docs/cli-spec.md`: `init [--force]`, `deploy [-c/--config] [--no-cache] [--blue-green]`, `status`, `logs [app_name] [-f/--follow] [-n/--tail]`, `rollback [app_name]`, `mcp-server` (hidden/explicit subcommand switching the binary into MCP stdio mode).
+- [x] Single binary entry point `cmd/easydrop/main.go` (locked – no `cmd/cli` + `cmd/mcp-server` split; NFR-03). Command tree lives in `internal/cli/` (`root.go` + one file per command); `main.go` only calls `cli.Execute()`.
+- [x] CLI framework `github.com/spf13/cobra` WITHOUT `viper` (locked – single `easydrop.toml`, cobra flags suffice).
+- [x] Commands from `docs/cli-spec.md`: `init [--force]` (via `config.Scaffold`+`WriteConfig`), `deploy [-c/--config] [--no-cache] [--blue-green] [--skip-bootstrap]`, `status`, `logs [app_name] [-f/--follow] [-n/--tail]`, `rollback [app_name]`. `mcp-server` lands in Milestone 8.
+- [x] `deploy` pipeline (`runDeploy`): parse → overlay `--no-cache`/`--blue-green` (`applyDeployFlags`, never unsets config-true) → gate `driver.type == single` → signal-aware ctx → `NewExecutor` → Bootstrap (skipped with `--skip-bootstrap`) → `Build` with `SrcDir` = config file's directory → `SingleDriver` (`BlueGreen` from config, `Ingress` wired when domain non-empty) → `Deploy` → Certbot when `nginx.ssl && domain != ""` (manager no-ops on localhost).
+- [x] `init` scaffolding (`config.Scaffold`, FR-02): EXPOSE port from Dockerfile (default 8080), compose driver on compose files, app name = sanitized dir base, server = localhost + current user. `WriteConfig` refuses overwrite without `--force`; output round-trips through `ParseConfig` (tested).
+- [x] Cross-field note (locked): `Bootstrapper.ensureDockerGroup` checks `id -nG` membership first and skips `usermod` when already in the docker group (idempotent, avoids pointless sudo).
 
 ## §8. MCP Server (Milestone 8)
 
@@ -288,10 +291,10 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 
 ### OD-01: Split container-internal vs host-published ports?
 - **Context:** `app.port` currently plays two roles: the container's internal
-  listen port AND the managed host-port pair `{Port, Port+1}` (SoloDriver §5).
+  listen port AND the managed host-port pair `{Port, Port+1}` (SingleDriver §5).
   An image with a fixed internal port (e.g. `nginx:80`) cannot be published
   on a different host port (e.g. host 80 busy → must use 8080).
-- **Affected:** `Config` `[app]` schema, SoloDriver port scheme, Nginx
+- **Affected:** `Config` `[app]` schema, SingleDriver port scheme, Nginx
   upstream port, `docs/cli-spec.md`, MCP schema resource.
 - **Options:**
   - **A (status quo):** single `port`. Constraint: the container MUST listen
