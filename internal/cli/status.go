@@ -6,8 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"easydrop/internal/core"
-	"easydrop/internal/core/drivers"
+	"easydrop/internal/deploy"
 )
 
 func statusCmd() *cobra.Command {
@@ -16,16 +15,11 @@ func statusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show the deployed app status",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(configPath)
+			cfg, err := deploy.LoadConfig(configPath)
 			if err != nil {
 				return err
 			}
-			ex, err := core.NewExecutor(&cfg.Server)
-			if err != nil {
-				return err
-			}
-			defer ex.Close()
-			st, err := drivers.NewSingleDriver(ex).Status(context.Background(), cfg.App.Name)
+			st, err := deploy.Status(context.Background(), configPath, "")
 			if err != nil {
 				return err
 			}
