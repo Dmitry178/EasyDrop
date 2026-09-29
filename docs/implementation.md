@@ -15,7 +15,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 5:** Single Container Orchestration Driver – DONE (`SingleDriver` direct default + opt-in Blue-Green on the {Port, Port+1} pair, backup + `Rollback`, Status/Logs/Teardown; `drivers/single_test.go` green).
 - [x] **Milestone 6:** Ingress Networking Infrastructure Layer – DONE (`NginxManager.Apply/UpdateIngress` + `CertbotManager.EnableSSL`; `infra/*_test.go` green).
 - [x] **Milestone 7:** Single-binary CLI – DONE (`cmd/easydrop` + `internal/cli` + `config.Scaffold`; real localhost deploy/status/logs/BG/rollback verified via built binary).
-- [ ] **Milestone 8:** MCP Server (`easydrop mcp-server` stdio, official `modelcontextprotocol/go-sdk`, tools from `docs/mcp-spec.md`)
+- [x] **Milestone 8:** MCP Server – DONE (`internal/mcp` on official SDK + shared `internal/deploy` core; handler/store/e2e tests + live stdio smoke green).
 - [ ] **Milestone 9 (deferred):** Compose/Swarm drivers, encrypted server vault (`manage_server` persistence), snap-docker fail-fast detection (OD-02 B-lite). Open product calls live in §9 (OD-01 ports, OD-02 snap-docker).
 
 > Locked decisions (see ARCHITECTURE.md §5): single binary `cmd/easydrop/main.go`;
@@ -281,9 +281,11 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 
 ## §8. MCP Server (Milestone 8)
 
-- [ ] Serve stdio JSON-RPC via `easydrop mcp-server` using the official `modelcontextprotocol/go-sdk` (locked).
-- [ ] Tools map 1:1 to `docs/mcp-spec.md`: `init_project`, `deploy_app`, `get_status`, `get_logs`, `rollback_app`, `manage_server`; resources `easydrop://docs/schema` (generated from go-toml/v2 structs) and `easydrop://docs/troubleshooting`.
-- [ ] `manage_server` persistence: MVP = local file store with `0600` permissions; encrypted vault is deferred to Milestone 9.
+- [x] Serve stdio JSON-RPC via `easydrop mcp-server` using the official `modelcontextprotocol/go-sdk` v1.8.0 (locked). `internal/mcp/server.go`: `NewServer()` + `Run(ctx)` over `mcp.StdioTransport{}`; `internal/cli/mcpserver.go` wires the cobra subcommand with signal-aware ctx. Single `internal/version.Version` (`0.1.0`, ldflags-overridable) feeds both `--version` and MCP `serverInfo`.
+- [x] One core, two interfaces (locked): the deploy pipeline lives in `internal/deploy/` (`Options`, `Run`, `LoadConfig`, `ResolveAppName`, `ApplyFlags`, `Status`, `Logs` with collection cap, `Rollback`, `Init`); `internal/cli` commands are thin wrappers, MCP handlers call the same functions. No CLI↔MCP imports.
+- [x] Tools map 1:1 to `docs/mcp-spec.md`: `init_project`, `deploy_app`, `get_status`, `get_logs`, `rollback_app`, `manage_server`; resources `easydrop://docs/schema` (static JSON Schema mirroring `internal/models`; struct-generated output deferred to M9) and `easydrop://docs/troubleshooting` (static runbook). Typed I/O with `jsonschema` tags; app failures return `isError` tool results (not protocol errors); `follow` log collection capped at 2000 lines.
+- [x] `manage_server` persistence: `~/.easydrop/servers.toml` (dir `0700`, file `0600`, upsert by host+user; `EASYDROP_SERVERS_FILE` override for tests); encrypted vault is deferred to Milestone 9. Secrets never echoed in messages or logs (tested).
+- [x] Verified: unit tests (store round-trip/perms/validation, handler arg validation, schema registration) + in-process e2e with a real SDK client (`e2e_test.go`: tools/list, init→EXPOSE detect, manage add + secret-leak check, resources, status-without-config isError) + live stdio smoke against the built binary (initialize, tools/list, init_project, manage_server, get_status error path, resources/list+read).
 
 ---
 
