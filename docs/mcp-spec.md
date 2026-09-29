@@ -47,7 +47,7 @@ AI assistants invoke these structured primitives to safely manage infrastructure
 
 ## 2. Exported Resources Schema
 The protocol maps contextual state metrics allowing connected LLM instances to autonomously query baseline environment criteria:
-- `easydrop://docs/schema`: Active structural JSON Schema validation blueprint enforcing correct structural rules on `easydrop.toml` parameters. Generated from the `internal/models` structs (parsed with go-toml/v2).
+- `easydrop://docs/schema`: Active structural JSON Schema validation blueprint enforcing correct structural rules on `easydrop.toml` parameters. MVP = static copy mirroring `internal/models` (struct-generated output deferred to M9).
 - `easydrop://docs/troubleshooting`: Systemic operational runbook compiling standard infrastructure mitigation paths (such as port conflicts, failing container network probes, or missing proxy headers) for automated self-healing execution loops.
 
 ## 3. Tool → Core mapping
