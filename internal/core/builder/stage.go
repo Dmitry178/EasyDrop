@@ -49,6 +49,13 @@ func StageWorkspace(ctx context.Context, ex core.CommandExecutor, archivePath, r
 	return nil
 }
 
+// snapConfinedOutput reports whether `docker info` output marks a
+// snap-confined daemon. Shared by the remote staging check and the local
+// builder (both hit the same sandbox limits).
+func snapConfinedOutput(infoOut string) bool {
+	return strings.Contains(infoOut, "/var/snap/docker") || strings.Contains(infoOut, "Ubuntu Core")
+}
+
 // IsSnapConfinedDaemon reports whether the target daemon runs inside a snap
 // sandbox. Such daemons see neither host /tmp nor hidden files in $HOME
 // (snapd's home interface), which affects staging paths and state dirs.
@@ -59,7 +66,7 @@ func IsSnapConfinedDaemon(ctx context.Context, ex core.CommandExecutor) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(out, "/var/snap/docker") || strings.Contains(out, "Ubuntu Core")
+	return snapConfinedOutput(out)
 }
 
 // checkDaemonStaging detects snap-confined dockerd (private /tmp) combined
