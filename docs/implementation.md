@@ -16,7 +16,8 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 6:** Ingress Networking Infrastructure Layer – DONE (`NginxManager.Apply/UpdateIngress` + `CertbotManager.EnableSSL`; `infra/*_test.go` green).
 - [x] **Milestone 7:** Single-binary CLI – DONE (`cmd/easydrop` + `internal/cli` + `config.Scaffold`; real localhost deploy/status/logs/BG/rollback verified via built binary).
 - [x] **Milestone 8:** MCP Server – DONE (`internal/mcp` on official SDK + shared `internal/deploy` core; handler/store/e2e tests + live stdio smoke green).
-- [x] **Milestone 9:** Compose/Swarm drivers, encrypted server vault, snap-docker fail-fast (OD-02), generated JSON-Schema resource – DONE. Open product calls live in §9 (OD-01 ports).
+- [x] **Milestone 9:** Compose/Swarm drivers, encrypted server vault, snap-docker fail-fast (OD-02), generated JSON-Schema resource – DONE.
+- [x] **Milestone 10:** Port split `app.port` / `app.host_port` (resolves OD-01) – DONE (config defaults + validation, SingleDriver pair, schema meta, live smoke on a fixed-port image).
 
 > Locked decisions (see ARCHITECTURE.md §5): single binary `cmd/easydrop/main.go`;
 > TOML `github.com/pelletier/go-toml/v2`; CLI `cobra` (no `viper`);
@@ -34,7 +35,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 ## §1. Configuration Blueprint & Domain Models
 
 ### 1.1. Data Struct Modeling (`internal/models/types.go`)
-- [x] Define `AppConfig` for the `[app]` block: `Name` (string), `Port` (int), `HealthCheckPath` (string, default `"/"`).
+- [x] Define `AppConfig` for the `[app]` block: `Name` (string), `Port` (int, in-container listen port), `HostPort` (int, host-published port, default = `Port`, M10), `HealthCheckPath` (string, default `"/"`).
 - [x] Define `ServerConfig` for the `[server]` block: `Host` (string), `User` (string), `SSHKey` (string), `Password` (string), `Port` (int).
 - [x] Define `BuildConfig` for the `[build]` block: `Strategy` (`"remote"`|`"local"`), `Registry` (string, for FR-04 local build), `Image` (string), `NoCache` (bool, settable via `deploy --no-cache` flag override).
 - [x] Define `DriverConfig` for the `[driver]` block: `Type` (`"single"`|`"compose"`|`"swarm"`), `ComposeFile` (string, default `"docker-compose.yml"`, only for `compose`), `BlueGreen` (bool, default `false` – Blue-Green is opt-in via config or `deploy --blue-green` override).
@@ -53,6 +54,8 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
   - `driver.type` = `"single"`
   - `driver.compose_file` = `"docker-compose.yml"` (only when `driver.type == "compose"`)
   - `app.health_check_path` = `"/"`
+  - `app.host_port` = `app.port` (M10: omitted `host_port` keeps pre-M10 behavior)
+  - Port validation: `app.port` and `app.host_port` in 1-65535, and `app.host_port` ≤ 65534 (the Blue-Green pair needs `host_port+1`)
 
 ### 1.3. Parsing Test Suite (`internal/config/parser_test.go`)
 - [x] Test Case: Parsing a fully populated valid TOML template.
@@ -193,7 +196,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] Direct mode (default, `BlueGreen=false`): best-effort `docker rm -f [app]-active`, then `docker run -d --name [app]-active -p [port]:[port] --restart unless-stopped easydrop/[app]:latest`, probe, ingress update (same port). Probe failure leaves the new container running for inspection and returns an error. No backup is kept.
 - [x] Blue-Green mode (`BlueGreen=true`) zero-downtime swap sequence:
 - [x] Evaluate host landscape state. Check for an active running instance named `[appName]-active` via `docker inspect -f` on `.NetworkSettings.Ports` (missing container = first deploy, not an error).
-- [x] Port scheme (locked): only the pair `{app.Port, app.Port+1}` is ever used. Green stages on whichever is free (active's port + alternation: no active → `app.Port`; active on `app.Port` → `app.Port+1`; active on `app.Port+1` → `app.Port`). Generalizes the spec's `app.Port + 1` example and prevents port leaks. NOTE: single `app.Port` doubles as container-internal and host port – splitting them is open decision OD-01 (§9).
+- [x] Port scheme (locked): only the pair `{hostPort, hostPort+1}` is ever used, where `hostPort = app.host_port` (defaults to `app.port` – see §1.1). Green stages on whichever is free (active's port + alternation: no active → `hostPort`; active on `hostPort` → `hostPort+1`; active on `hostPort+1` → `hostPort`). Generalizes the spec's `app.Port + 1` example and prevents port leaks. Containers always listen on the internal `app.port`, so fixed-port images (`nginx:80`) publish anywhere (M10 / OD-01).
 - [x] Best-effort `docker rm -f [appName]-green` before staging (leftover from a failed deploy), then assemble and execute the deployment instructions for the isolated staging ("green") instance:
   ```bash
   docker run -d --name [appName]-green -p [temp_port]:[app_internal_port] --restart unless-stopped easydrop/[appName]:latest
@@ -332,20 +335,23 @@ Shared for both drivers:
   `LocalBuilder` is picked up.
 
 ### OD-01: Split container-internal vs host-published ports?
-- **Context:** `app.port` currently plays two roles: the container's internal
+- **Context (original):** `app.port` played two roles – the container's internal
   listen port AND the managed host-port pair `{Port, Port+1}` (SingleDriver §5).
-  An image with a fixed internal port (e.g. `nginx:80`) cannot be published
-  on a different host port (e.g. host 80 busy → must use 8080).
-- **Affected:** `Config` `[app]` schema, SingleDriver port scheme, Nginx
-  upstream port, `docs/cli-spec.md`, MCP schema resource.
-- **Options:**
-  - **A (status quo):** single `port`. Constraint: the container MUST listen
-    on `app.port`; host `{port, port+1}` must be free. Simplest, enough for MVP.
-  - **B (recommended when needed):** add optional `app.host_port`
-    (default = `port`); managed pair becomes `{host_port, host_port+1}`.
-    Backward compatible, small schema addition.
-- **Status:** OPEN. MVP proceeds with **A** + documented constraint; switch
-  to **B** on the first real deploy that hits it.
+  An image with a fixed internal port (e.g. `nginx:80`) could not be published
+  on a different host port (host 80 busy → `address already in use`), and the
+  app would land directly on a public port, bypassing the Nginx/TLS layer.
+- **Decision (M10, option B):** added optional `app.host_port` (default =
+  `app.port`). `port` is now only the in-container listen port; the managed
+  Blue-Green pair is `{host_port, host_port+1}`. Backward compatible: configs
+  without `host_port` behave exactly as before.
+- **Status:** RESOLVED in M10. Validation: both ports must be 1-65535, and
+  `host_port` ≤ 65534 (the pair needs `host_port+1`). Implemented in
+  `ApplyDefaults` (`internal/config`), `publishedPort` +
+  `deployBlueGreen`/`deployDirect` (SingleDriver), and the generated MCP
+  schema (`schemaMeta` entry `app.host_port`).
+- **Verified:** live smoke with a fixed-port image (`http-echo` on :80 inside,
+  published as `18095:80`): direct deploy, Blue-Green swap onto `18096` keeping
+  internal 80, and rollback back to 18095 – all green via the built binary.
 
 ### OD-02: How to handle snap-confined Docker daemons?
 - **Context (M4 smoke, Ubuntu 24.04 + snap-docker 29.8.0):** a snap-confined
