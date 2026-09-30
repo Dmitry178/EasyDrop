@@ -43,13 +43,16 @@ const (
 // SingleDriver manages isolated single-container deployments in two modes.
 //
 // Direct mode (BlueGreen=false, default): stop the old container (if any)
-// and start the new one in place on app.Port — simple, with brief downtime.
+// and start the new one in place on app.host_port — simple, with brief
+// downtime.
 //
 // Blue-Green mode (BlueGreen=true, opt-in via `driver.blue_green` or
 // `deploy --blue-green`): zero-downtime swaps on the port pair
-// {app.Port, app.Port+1}. Green stages on whichever is free; after promotion
-// ingress points at it, and the retired container is kept stopped as
-// [app]-active-previous — the rollback backup consumed by Rollback.
+// {app.host_port, app.host_port+1} (host_port defaults to app.port). Green
+// stages on whichever is free; after promotion ingress points at it, and the
+// retired container is kept stopped as [app]-active-previous — the rollback
+// backup consumed by Rollback. Containers always listen on app.port
+// internally, so fixed-port images (nginx:80) publish fine.
 //
 // Progress goes to Out (os.Stderr default).
 type SingleDriver struct {
@@ -128,45 +131,57 @@ func (d *SingleDriver) Deploy(ctx context.Context, app *models.Application) erro
 }
 
 // deployDirect stops the old container (if any) and starts the new one in
-// place on app.Port. Brief downtime, no backup kept: probe failure leaves the
-// new container running for inspection and returns an error.
+// place, publishing app.HostPort → app.Port. Brief downtime, no backup kept:
+// probe failure leaves the new container running for inspection and returns
+// an error.
 func (d *SingleDriver) deployDirect(ctx context.Context, app *models.Application) error {
 	cfg := app.Config
-	name, port := cfg.App.Name, cfg.App.Port
+	name, internalPort := cfg.App.Name, cfg.App.Port
+	hostPort := publishedPort(cfg)
 	active := activeName(name)
 
 	_, _, _, _ = d.exec.ExecCommand(ctx, "docker rm -f "+q(active))
 
 	run := fmt.Sprintf("docker run -d --name %s -p %d:%d --restart unless-stopped %s",
-		q(active), port, port, q(imageRef(name)))
+		q(active), hostPort, internalPort, q(imageRef(name)))
 	if _, _, _, err := d.exec.ExecCommand(ctx, run); err != nil {
 		return fmt.Errorf("start container %s: %w", active, err)
 	}
-	if err := d.probe(ctx, port, cfg.App.HealthCheckPath, "active"); err != nil {
+	if err := d.probe(ctx, hostPort, cfg.App.HealthCheckPath, "active"); err != nil {
 		return err // container left running for inspection
 	}
-	if err := d.updateIngress(ctx, cfg.Nginx.Domain, port); err != nil {
+	if err := d.updateIngress(ctx, cfg.Nginx.Domain, hostPort); err != nil {
 		return err
 	}
-	d.logf("%s live on host port %d (direct)", active, port)
+	d.logf("%s live on host port %d (internal %d, direct)", active, hostPort, internalPort)
 	return nil
 }
 
+// publishedPort resolves the host port: app.host_port when set, else app.port
+// (parser defaults them equal; this keeps the driver safe for in-memory Configs).
+func publishedPort(cfg *models.Config) int {
+	if cfg.App.HostPort > 0 {
+		return cfg.App.HostPort
+	}
+	return cfg.App.Port
+}
+
 // deployBlueGreen runs the zero-downtime swap: stage green on the free port
-// of the {Port, Port+1} pair → probe health → update ingress → retire active
-// to the stopped backup ([app]-active-previous, dropping any older backup) →
-// rename green to active. Probe or ingress failure removes green and keeps
-// production untouched.
+// of the {HostPort, HostPort+1} pair → probe health → update ingress → retire
+// active to the stopped backup ([app]-active-previous, dropping any older
+// backup) → rename green to active. Probe or ingress failure removes green and
+// keeps production untouched.
 func (d *SingleDriver) deployBlueGreen(ctx context.Context, app *models.Application) error {
 	cfg := app.Config
 	name, internalPort := cfg.App.Name, cfg.App.Port
+	hostPort := publishedPort(cfg)
 	active, green, backup := activeName(name), greenName(name), backupName(name)
 
 	activePort, err := d.containerHostPort(ctx, active, internalPort)
 	if err != nil {
 		return err
 	}
-	greenPort := cfg.App.Port
+	greenPort := hostPort
 	if activePort == greenPort {
 		greenPort++
 	}
@@ -253,7 +268,7 @@ func (d *SingleDriver) Rollback(ctx context.Context, app *models.Application) er
 		return err
 	}
 	if port == 0 {
-		port = cfg.App.Port
+		port = publishedPort(cfg)
 	}
 	if err := d.updateIngress(ctx, cfg.Nginx.Domain, port); err != nil {
 		return fmt.Errorf("update ingress after rollback: %w", err)
