@@ -6,6 +6,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"easydrop/internal/config"
@@ -130,10 +131,19 @@ func Run(ctx context.Context, opts Options, out func(string)) error {
 		return err
 	}
 	if cfg.Driver.Type == "single" {
-		rb := builder.NewRemoteBuilder(ex)
-		rb.SrcDir = srcDir
-		if err := rb.Build(ctx, app); err != nil {
-			return err
+		switch cfg.Build.Strategy {
+		case "local":
+			// FR-04: build on THIS machine, push to the registry, and let
+			// the host pull the image — no workspace upload at all.
+			if err := buildLocalAndPull(ctx, cfg, app, ex, srcDir, out); err != nil {
+				return err
+			}
+		default:
+			rb := builder.NewRemoteBuilder(ex)
+			rb.SrcDir = srcDir
+			if err := rb.Build(ctx, app); err != nil {
+				return err
+			}
 		}
 	}
 	if err := drv.Deploy(ctx, app); err != nil {
@@ -148,6 +158,32 @@ func Run(ctx context.Context, opts Options, out func(string)) error {
 	}
 
 	say("%s deployed", cfg.App.Name)
+	return nil
+}
+
+// buildLocalAndPull implements build.strategy = "local" for the single
+// driver: LocalBuilder builds + pushes on this machine, the target pulls the
+// pushed ref, and app.Image pins what the driver runs.
+func buildLocalAndPull(ctx context.Context, cfg *models.Config, app *models.Application, ex core.CommandExecutor, srcDir string, out func(string)) error {
+	if cfg.Driver.Type != "single" {
+		return fmt.Errorf("build.strategy = \"local\" is only supported by the single driver (got %q): compose/swarm build their services on the host", cfg.Driver.Type)
+	}
+	lb := builder.NewLocalBuilder()
+	lb.SrcDir = srcDir
+	if out != nil {
+		lb.Out = os.Stderr
+	}
+	ref, err := lb.BuildAndPush(ctx, app)
+	if err != nil {
+		return err
+	}
+	app.Image = ref
+	if out != nil {
+		out(fmt.Sprintf("pulling %s on the target host...", ref))
+	}
+	if _, _, _, err := ex.ExecCommand(ctx, "docker pull "+core.EscapeShellArg(ref)); err != nil {
+		return fmt.Errorf("pull %s on target host (check registry auth and network reachability): %w", ref, err)
+	}
 	return nil
 }
 
