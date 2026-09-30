@@ -55,28 +55,47 @@ func ApplyFlags(cfg *models.Config, noCache, blueGreen bool) {
 	}
 }
 
-// NewDriver builds the solo driver for cfg, wiring ingress when a domain is
-// configured. Only the single driver is implemented (M9: compose/swarm).
-func NewDriver(cfg *models.Config, ex core.CommandExecutor) (*drivers.SingleDriver, error) {
-	if cfg.Driver.Type != "single" {
-		return nil, fmt.Errorf("driver type %q is not implemented yet (single only)", cfg.Driver.Type)
-	}
-	sd := drivers.NewSingleDriver(ex)
-	sd.BlueGreen = cfg.Driver.BlueGreen
+// NewDriver builds the configured driver (single/compose/swarm), wiring
+// ingress when a domain is set. srcDir feeds compose/swarm workspace
+// shipping (single builds via RemoteBuilder in Run instead).
+func NewDriver(cfg *models.Config, ex core.CommandExecutor, srcDir string) (drivers.DeploymentDriver, error) {
+	var ingress drivers.IngressUpdater
 	if cfg.Nginx.Domain != "" {
-		sd.Ingress = infra.NewNginxManager(ex)
+		ingress = infra.NewNginxManager(ex)
 	}
-	return sd, nil
+	switch cfg.Driver.Type {
+	case "single":
+		sd := drivers.NewSingleDriver(ex)
+		sd.BlueGreen = cfg.Driver.BlueGreen
+		sd.Ingress = ingress
+		return sd, nil
+	case "compose":
+		cd := drivers.NewComposeDriver(ex)
+		cd.SrcDir = srcDir
+		cd.Ingress = ingress
+		return cd, nil
+	case "swarm":
+		wd := drivers.NewSwarmDriver(ex)
+		wd.SrcDir = srcDir
+		wd.Ingress = ingress
+		return wd, nil
+	default:
+		return nil, fmt.Errorf("unknown driver type %q (want single, compose or swarm)", cfg.Driver.Type)
+	}
 }
 
-// Run executes the full pipeline: executor → bootstrap → build →
-// single deploy (+ ingress) → SSL. The workspace is the config file's directory.
+// Run executes the full pipeline: executor → bootstrap → build (single
+// driver only; compose/swarm ship the workspace themselves) → deploy (+
+// ingress) → SSL. The workspace is the config file's directory.
 func Run(ctx context.Context, opts Options, out func(string)) error {
 	cfg, err := LoadConfig(opts.ConfigPath)
 	if err != nil {
 		return err
 	}
 	ApplyFlags(cfg, opts.NoCache, opts.BlueGreen)
+	if cfg.Driver.BlueGreen && cfg.Driver.Type != "single" {
+		return fmt.Errorf("blue-green is only supported by the single driver (got %q)", cfg.Driver.Type)
+	}
 
 	ex, err := core.NewExecutor(&cfg.Server)
 	if err != nil {
@@ -104,17 +123,20 @@ func Run(ctx context.Context, opts Options, out func(string)) error {
 	if err != nil {
 		return fmt.Errorf("resolve config path: %w", err)
 	}
-	rb := builder.NewRemoteBuilder(ex)
-	rb.SrcDir = filepath.Dir(abs)
-	if err := rb.Build(ctx, app); err != nil {
-		return err
-	}
+	srcDir := filepath.Dir(abs)
 
-	sd, err := NewDriver(cfg, ex)
+	drv, err := NewDriver(cfg, ex, srcDir)
 	if err != nil {
 		return err
 	}
-	if err := sd.Deploy(ctx, app); err != nil {
+	if cfg.Driver.Type == "single" {
+		rb := builder.NewRemoteBuilder(ex)
+		rb.SrcDir = srcDir
+		if err := rb.Build(ctx, app); err != nil {
+			return err
+		}
+	}
+	if err := drv.Deploy(ctx, app); err != nil {
 		return err
 	}
 
@@ -129,40 +151,32 @@ func Run(ctx context.Context, opts Options, out func(string)) error {
 	return nil
 }
 
-// Status queries the active container state.
+// Status queries the deployment state via the configured driver.
 func Status(ctx context.Context, configPath, appName string) (*models.AppStatus, error) {
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		return nil, err
-	}
-	name, err := ResolveAppName(appName, cfg)
-	if err != nil {
-		return nil, err
-	}
-	ex, err := core.NewExecutor(&cfg.Server)
+	cfg, ex, name, err := setupDriver(configPath, appName)
 	if err != nil {
 		return nil, err
 	}
 	defer ex.Close()
-	return drivers.NewSingleDriver(ex).Status(ctx, name)
+	drv, err := NewDriver(cfg, ex, "")
+	if err != nil {
+		return nil, err
+	}
+	return drv.Status(ctx, name)
 }
 
 // Logs collects container logs; follow streams until ctx ends or limit hits.
 func Logs(ctx context.Context, configPath, appName string, lines int, follow bool, limit int) ([]string, error) {
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		return nil, err
-	}
-	name, err := ResolveAppName(appName, cfg)
-	if err != nil {
-		return nil, err
-	}
-	ex, err := core.NewExecutor(&cfg.Server)
+	cfg, ex, name, err := setupDriver(configPath, appName)
 	if err != nil {
 		return nil, err
 	}
 	defer ex.Close()
-	ch, err := drivers.NewSingleDriver(ex).Logs(ctx, name, lines, follow)
+	drv, err := NewDriver(cfg, ex, "")
+	if err != nil {
+		return nil, err
+	}
+	ch, err := drv.Logs(ctx, name, lines, follow)
 	if err != nil {
 		return nil, err
 	}
@@ -176,23 +190,36 @@ func Logs(ctx context.Context, configPath, appName string, lines int, follow boo
 	return out, nil
 }
 
-// Rollback restores the backup kept by the last Blue-Green deploy.
+// Rollback restores the backup kept by the last replacing deploy.
 func Rollback(ctx context.Context, configPath, appName string) error {
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		return err
-	}
-	name, err := ResolveAppName(appName, cfg)
-	if err != nil {
-		return err
-	}
-	cfg.App.Name = name // operate on the requested app
-	ex, err := core.NewExecutor(&cfg.Server)
+	cfg, ex, name, err := setupDriver(configPath, appName)
 	if err != nil {
 		return err
 	}
 	defer ex.Close()
-	return drivers.NewSingleDriver(ex).Rollback(ctx, &models.Application{Config: cfg})
+	cfg.App.Name = name // operate on the requested app
+	drv, err := NewDriver(cfg, ex, "")
+	if err != nil {
+		return err
+	}
+	return drv.Rollback(ctx, &models.Application{Config: cfg})
+}
+
+// setupDriver loads config, resolves the app name and opens the executor.
+func setupDriver(configPath, appName string) (*models.Config, core.CommandExecutor, string, error) {
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	name, err := ResolveAppName(appName, cfg)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	ex, err := core.NewExecutor(&cfg.Server)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return cfg, ex, name, nil
 }
 
 // Init scaffolds easydrop.toml in dir from its contents.
