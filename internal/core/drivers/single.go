@@ -102,7 +102,15 @@ func (d *SingleDriver) followInterval() time.Duration {
 
 func activeName(appName string) string { return appName + "-active" }
 func greenName(appName string) string  { return appName + "-green" }
-func imageRef(appName string) string   { return "easydrop/" + appName + ":latest" }
+
+// imageRef resolves the image a container must run: the pushed registry
+// reference when set (local builds), otherwise the remote-built default.
+func imageRef(app *models.Application) string {
+	if app.Image != "" {
+		return app.Image
+	}
+	return "easydrop/" + app.Config.App.Name + ":latest"
+}
 
 func q(s string) string { return core.EscapeShellArg(s) }
 
@@ -143,7 +151,7 @@ func (d *SingleDriver) deployDirect(ctx context.Context, app *models.Application
 	_, _, _, _ = d.exec.ExecCommand(ctx, "docker rm -f "+q(active))
 
 	run := fmt.Sprintf("docker run -d --name %s -p %d:%d --restart unless-stopped %s",
-		q(active), hostPort, internalPort, q(imageRef(name)))
+		q(active), hostPort, internalPort, q(imageRef(app)))
 	if _, _, _, err := d.exec.ExecCommand(ctx, run); err != nil {
 		return fmt.Errorf("start container %s: %w", active, err)
 	}
@@ -191,7 +199,7 @@ func (d *SingleDriver) deployBlueGreen(ctx context.Context, app *models.Applicat
 	_, _, _, _ = d.exec.ExecCommand(ctx, "docker rm -f "+q(green))
 
 	run := fmt.Sprintf("docker run -d --name %s -p %d:%d --restart unless-stopped %s",
-		q(green), greenPort, internalPort, q(imageRef(name)))
+		q(green), greenPort, internalPort, q(imageRef(app)))
 	if _, _, _, err := d.exec.ExecCommand(ctx, run); err != nil {
 		return fmt.Errorf("start staging container %s: %w", green, err)
 	}
