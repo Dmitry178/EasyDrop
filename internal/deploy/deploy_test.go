@@ -1,7 +1,9 @@
 package deploy
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"easydrop/internal/core"
@@ -78,5 +80,29 @@ func TestNewDriverSwitch(t *testing.T) {
 	cfg.Driver.Type = "nomad"
 	if _, err := NewDriver(cfg, ex, ""); err == nil {
 		t.Errorf("NewDriver(nomad) must fail")
+	}
+}
+
+func TestBuildLocalAndPullRejectsNonSingleDriver(t *testing.T) {
+	cfg := testConfig()
+	cfg.Driver.Type = "compose"
+	cfg.Build.Strategy = "local"
+	cfg.Build.Registry = "ghcr.io"
+	err := buildLocalAndPull(context.Background(), cfg, &models.Application{Config: cfg}, core.NewLocalExecutor(), t.TempDir(), nil)
+	if err == nil {
+		t.Fatalf("local strategy with compose must fail")
+	}
+	if !strings.Contains(err.Error(), "single driver") {
+		t.Errorf("error must explain the driver restriction, got: %v", err)
+	}
+}
+
+func TestBuildLocalAndPullRequiresRegistry(t *testing.T) {
+	cfg := testConfig()
+	cfg.Build.Strategy = "local" // no registry
+	// Validation must happen before any docker call.
+	err := buildLocalAndPull(context.Background(), cfg, &models.Application{Config: cfg}, core.NewLocalExecutor(), t.TempDir(), nil)
+	if err == nil {
+		t.Fatalf("local strategy without registry must fail")
 	}
 }
