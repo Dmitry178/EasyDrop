@@ -15,7 +15,7 @@
 
 *   **One Core, Two Interfaces:** Единое мощное ядро деплоя, доступное как через удобный терминальный CLI, так и через MCP-сервер для AI-агентов.
 *   **Zero-Config Reverse Proxy:** Автоматическая генерация конфигурации Nginx и получение SSL-сертификатов от Let's Encrypt из коробки.
-*   **Remote Build (Без Registry):** Сборка Docker-образов прямо на целевом сервере – внешние Docker Registry не требуются.
+*   **Remote и Local сборка:** Сборка Docker-образов прямо на целевом сервере (внешние Registry не требуются) либо локально с push в приватный/публичный Registry – тогда на сервер уезжает только образ, а не исходники.
 *   **Zero-to-Hero Bootstrapping:** Автоматическая проверка и установка Docker Engine, Docker Compose и настройка брандмауэра на чистой VPS.
 *   **AI-Native (MCP):** Полная интеграция с Cursor, Claude Code и другими AI-ассистентами для управления деплоем текстовыми командами.
 
@@ -45,7 +45,10 @@ user = "root"
 ssh_key = "~/.ssh/id_rsa"
 
 [build]
-strategy = "remote"
+strategy = "remote"        # "remote" = сборка на хосте (без registry)
+# strategy = "local"       # собрать здесь, запушить в `registry`, подтянуть на хосте
+# registry = "ghcr.io/myorg"
+# image = "web:2.1"        # опциональное имя:тег для pushed-образа
 
 [driver]
 type = "single"   # "single" (один контейнер), "compose" (stack-файл) или "swarm"

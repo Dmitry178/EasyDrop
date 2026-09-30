@@ -15,7 +15,7 @@ It delivers a PaaS-like experience (similar to Railway or Fly.io) on your own in
 
 *   **One Core, Two Interfaces:** A unified deployment core accessible via either a developer-friendly terminal CLI or an MCP server for AI agents.
 *   **Zero-Config Reverse Proxy:** Automatically generates Nginx configurations and provisions Let's Encrypt SSL certificates right out of the box.
-*   **Remote & Local Builds:** Supports building Docker images directly on the target host (no external registry required) or building locally and pushing to a private registry.
+*   **Remote & Local Builds:** Build Docker images directly on the target host (no external registry required) or locally and push to a private/public registry – the target then pulls the image instead of receiving your source.
 *   **Zero-to-Hero Bootstrapping:** Automatically inspects and prepares clean Linux servers by installing Docker Engine, Docker Compose, and configuring firewall rules.
 *   **AI-Native (MCP):** Native Model Context Protocol integration allows Cursor, Claude Code, and other AI assistants to manage infrastructure via natural language.
 
@@ -45,7 +45,10 @@ user = "root"
 ssh_key = "~/.ssh/id_rsa"
 
 [build]
-strategy = "remote"
+strategy = "remote"        # "remote" = build on the host (no registry)
+# strategy = "local"       # build here, push to `registry`, pull on the host
+# registry = "ghcr.io/myorg"
+# image = "web:2.1"        # optional name:tag for the pushed image
 
 [driver]
 type = "single"   # "single" (one container), "compose" (stack file), or "swarm"
