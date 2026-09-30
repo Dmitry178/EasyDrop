@@ -50,9 +50,13 @@ type NginxConfig struct {
 	Email  string `toml:"email,omitempty"`
 }
 
-// Application acts as the compiled runtime context passing through the Core
+// Application acts as the compiled runtime context passing through the Core.
+// Image is the resolved image reference drivers must run: LocalBuilder sets it
+// to the pushed registry reference (build.strategy = "local"), otherwise it
+// stays empty and drivers use the remote-built easydrop/<name>:latest.
 type Application struct {
 	Config *Config
+	Image  string
 }
 
 type AppStatus struct {
