@@ -103,6 +103,7 @@ func uploadedNames(t *testing.T, blob []byte) []string {
 
 func TestBuildHappyPath(t *testing.T) {
 	f := &fakeBuildExecutor{script: map[string]error{
+		"docker info --format '{{.DockerRootDir}}|{{.OperatingSystem}}'":                         nil,
 		"tar -xzf '/tmp/easydrop/builds/my-api/project.tar.gz' -C '/tmp/easydrop/builds/my-api'": nil,
 		"docker build -t 'easydrop/my-api:latest'  '/tmp/easydrop/builds/my-api'":                nil,
 		"rm -rf '/tmp/easydrop/builds/my-api'":                                                   nil,
@@ -130,6 +131,7 @@ func TestBuildHappyPath(t *testing.T) {
 
 func TestBuildNoCacheFlag(t *testing.T) {
 	f := &fakeBuildExecutor{script: map[string]error{
+		"docker info --format '{{.DockerRootDir}}|{{.OperatingSystem}}'":                         nil,
 		"tar -xzf '/tmp/easydrop/builds/my-api/project.tar.gz' -C '/tmp/easydrop/builds/my-api'": nil,
 		"docker build -t 'easydrop/my-api:latest' --no-cache '/tmp/easydrop/builds/my-api'":      nil,
 		"rm -rf '/tmp/easydrop/builds/my-api'":                                                   nil,
@@ -144,6 +146,7 @@ func TestBuildNoCacheFlag(t *testing.T) {
 
 func TestBuildFailureKeepsStaging(t *testing.T) {
 	f := &fakeBuildExecutor{script: map[string]error{
+		"docker info --format '{{.DockerRootDir}}|{{.OperatingSystem}}'":                         nil,
 		"tar -xzf '/tmp/easydrop/builds/my-api/project.tar.gz' -C '/tmp/easydrop/builds/my-api'": nil,
 		"docker build -t 'easydrop/my-api:latest'  '/tmp/easydrop/builds/my-api'":                fmt.Errorf("fake: docker build exited 1"),
 	}}
@@ -162,6 +165,7 @@ func TestBuildFailureKeepsStaging(t *testing.T) {
 func TestBuildStagingBaseOverride(t *testing.T) {
 	t.Setenv("EASYDROP_STAGING_BASE", "/srv/easydrop")
 	f := &fakeBuildExecutor{script: map[string]error{
+		"docker info --format '{{.DockerRootDir}}|{{.OperatingSystem}}'":                         nil,
 		"tar -xzf '/srv/easydrop/builds/my-api/project.tar.gz' -C '/srv/easydrop/builds/my-api'": nil,
 		"docker build -t 'easydrop/my-api:latest'  '/srv/easydrop/builds/my-api'":                nil,
 		"rm -rf '/srv/easydrop/builds/my-api'":                                                   nil,
@@ -197,5 +201,51 @@ func TestBuildNilApp(t *testing.T) {
 	b.Out = &bytes.Buffer{}
 	if err := b.Build(context.Background(), nil); err == nil {
 		t.Errorf("Build(nil) expected error, got nil")
+	}
+}
+
+type infoFake struct {
+	out string
+	err error
+}
+
+func (f *infoFake) ExecCommand(_ context.Context, _ string) (string, string, int, error) {
+	if f.err != nil {
+		return "", "", 1, f.err
+	}
+	return f.out, "", 0, nil
+}
+
+func (f *infoFake) UploadFile(_ context.Context, _, _ string) error { return nil }
+func (f *infoFake) Close() error                                    { return nil }
+
+func TestCheckDaemonStaging(t *testing.T) {
+	cases := []struct {
+		name    string
+		infoOut string
+		infoErr error
+		baseEnv string
+		wantErr bool
+	}{
+		{"apt docker", "/var/lib/docker|Ubuntu 24.04\n", nil, "", false},
+		{"info failure tolerated", "", fmt.Errorf("fake: no daemon"), "", false},
+		{"snap with tmp base", "/var/snap/docker/common/var-lib-docker|Ubuntu Core 24\n", nil, "", true},
+		{"snap with override base", "/var/snap/docker/common/var-lib-docker|Ubuntu Core 24\n", nil, "/home/u/staging", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := tc.baseEnv
+			if base == "" {
+				base = "/tmp/easydrop" // pin default regardless of ambient env
+			}
+			t.Setenv("EASYDROP_STAGING_BASE", base)
+			err := checkDaemonStaging(context.Background(), &infoFake{out: tc.infoOut, err: tc.infoErr})
+			if (err != nil) != tc.wantErr {
+				t.Errorf("checkDaemonStaging() err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "EASYDROP_STAGING_BASE") {
+				t.Errorf("error must point at the override, got: %v", err)
+			}
+		})
 	}
 }
