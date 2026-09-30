@@ -47,7 +47,7 @@ ssh_key = "~/.ssh/id_rsa"
 strategy = "remote"
 
 [driver]
-type = "single"
+type = "single"   # "single" (один контейнер), "compose" (stack-файл) или "swarm"
 
 [nginx]
 domain = "my-project.com"
@@ -59,7 +59,9 @@ ssl = true
 ```bash
 easydrop deploy
 ```
-EasyDrop сам подключится по SSH, проверит наличие Docker, перенесет код, соберет образ, настроит Nginx, выпустит SSL-сертификат и запустит бесперебойное (Blue-Green) обновление контейнера.
+EasyDrop сам подключится по SSH, проверит наличие Docker, перенесет код, соберет образ, настроит Nginx, выпустит SSL-сертификат и переключит контейнеры. По умолчанию драйвер `single` обновляет контейнер на месте; добавьте `--blue-green` для бесперебойного (Blue-Green) развёртывания – он сохраняет backup для отката. Compose- и Swarm-проекты деплоятся той же командой.
+
+**Откат:** `easydrop rollback` возвращает предыдущую версию – остановленный контейнер-бэкап для Blue-Green, предыдущий stack-файл для Compose/Swarm.
 
 ---
 

@@ -47,7 +47,7 @@ ssh_key = "~/.ssh/id_rsa"
 strategy = "remote"
 
 [driver]
-type = "single"
+type = "single"   # "single" (one container), "compose" (stack file), or "swarm"
 
 [nginx]
 domain = "my-project.com"
@@ -59,7 +59,9 @@ Deploy your stack to production with a single command:
 ```bash
 easydrop deploy
 ```
-EasyDrop will handle the SSH handshake, bootstrap Docker if missing, securely transfer code, build the image, provision Nginx/SSL, and orchestrate a zero-downtime (Blue-Green) container swap.
+EasyDrop will handle the SSH handshake, bootstrap Docker if missing, securely transfer code, build the image, provision Nginx/SSL, and switch containers. The default `single` driver redeploys in place; add `--blue-green` for a zero-downtime swap (it keeps a rollback backup). Compose and Swarm projects deploy with the same command.
+
+**Rolling back:** `easydrop rollback` restores the previous version – for Blue-Green deploys the stopped container backup, for Compose/Swarm the previous stack file.
 
 ---
 
