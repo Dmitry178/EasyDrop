@@ -1,8 +1,10 @@
 package deploy
 
 import (
+	"fmt"
 	"testing"
 
+	"easydrop/internal/core"
 	"easydrop/internal/models"
 )
 
@@ -51,5 +53,30 @@ func TestResolveAppName(t *testing.T) {
 	}
 	if _, err := ResolveAppName("", nil); err == nil {
 		t.Errorf("empty arg without config must fail")
+	}
+}
+
+func TestNewDriverSwitch(t *testing.T) {
+	ex := core.NewLocalExecutor()
+	defer ex.Close()
+	for typ, want := range map[string]string{
+		"single":  "*drivers.SingleDriver",
+		"compose": "*drivers.ComposeDriver",
+		"swarm":   "*drivers.SwarmDriver",
+	} {
+		cfg := testConfig()
+		cfg.Driver.Type = typ
+		drv, err := NewDriver(cfg, ex, "/tmp/ws")
+		if err != nil {
+			t.Fatalf("NewDriver(%s): %v", typ, err)
+		}
+		if got := fmt.Sprintf("%T", drv); got != want {
+			t.Errorf("NewDriver(%s) = %s, want %s", typ, got, want)
+		}
+	}
+	cfg := testConfig()
+	cfg.Driver.Type = "nomad"
+	if _, err := NewDriver(cfg, ex, ""); err == nil {
+		t.Errorf("NewDriver(nomad) must fail")
 	}
 }
