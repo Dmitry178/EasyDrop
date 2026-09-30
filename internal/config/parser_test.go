@@ -149,3 +149,85 @@ domain = "example.com"
 		t.Errorf("Driver.ComposeFile = %q, want default docker-compose.yml", cfg2.Driver.ComposeFile)
 	}
 }
+
+func TestPortSplitDefaults(t *testing.T) {
+	path := writeTempTOML(t, `
+[app]
+name = "api"
+port = 3000
+[server]
+host = "localhost"
+user = "root"
+[nginx]
+domain = "example.com"
+`)
+	cfg, err := ParseConfig(path)
+	if err != nil {
+		t.Fatalf("ParseConfig() unexpected error: %v", err)
+	}
+	if cfg.App.HostPort != cfg.App.Port {
+		t.Errorf("HostPort = %d, must default to Port %d", cfg.App.HostPort, cfg.App.Port)
+	}
+}
+
+func TestPortSplitExplicitHostPort(t *testing.T) {
+	path := writeTempTOML(t, `
+[app]
+name = "api"
+port = 80
+host_port = 18080
+[server]
+host = "localhost"
+user = "root"
+[nginx]
+domain = "example.com"
+`)
+	cfg, err := ParseConfig(path)
+	if err != nil {
+		t.Fatalf("ParseConfig() unexpected error: %v", err)
+	}
+	if cfg.App.Port != 80 || cfg.App.HostPort != 18080 {
+		t.Errorf("Port/HostPort = %d/%d, want 80/18080", cfg.App.Port, cfg.App.HostPort)
+	}
+}
+
+func TestPortValidation(t *testing.T) {
+	cases := map[string]string{
+		"zero port": `
+[app]
+name = "api"
+[server]
+host = "localhost"
+user = "root"`,
+		"port too high": `
+[app]
+name = "api"
+port = 70000
+[server]
+host = "localhost"
+user = "root"`,
+		"host_port too high": `
+[app]
+name = "api"
+port = 80
+host_port = 99999
+[server]
+host = "localhost"
+user = "root"`,
+		"host_port at ceiling leaves no blue-green port": `
+[app]
+name = "api"
+port = 80
+host_port = 65535
+[server]
+host = "localhost"
+user = "root"`,
+	}
+	for name, tomlBody := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseConfig(writeTempTOML(t, tomlBody)); err == nil {
+				t.Errorf("ParseConfig() expected error, got nil")
+			}
+		})
+	}
+}
