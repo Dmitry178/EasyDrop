@@ -52,34 +52,18 @@ func (b *RemoteBuilder) Build(ctx context.Context, app *models.Application) erro
 		srcDir = cwd
 	}
 
-	tmp, err := os.CreateTemp("", "easydrop-build-*.tar.gz")
-	if err != nil {
-		return fmt.Errorf("create temp archive: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
 	b.logf("archiving workspace %s...", srcDir)
-	if err := CreateProjectArchive(srcDir, tmp); err != nil {
-		tmp.Close()
+	tmpPath, err := ArchiveWorkspace(srcDir)
+	if err != nil {
 		return err
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp archive: %w", err)
-	}
+	defer os.Remove(tmpPath)
 
 	remoteDir := core.StagingBase() + "/builds/" + name
-	remoteArchive := remoteDir + "/" + archiveFileName
 
-	b.logf("uploading to %s...", remoteArchive)
-	if err := b.exec.UploadFile(ctx, tmpPath, remoteArchive); err != nil {
-		return fmt.Errorf("upload project archive: %w", err)
-	}
-
-	untar := fmt.Sprintf("tar -xzf %s -C %s",
-		core.EscapeShellArg(remoteArchive), core.EscapeShellArg(remoteDir))
-	if _, _, _, err := b.exec.ExecCommand(ctx, untar); err != nil {
-		return fmt.Errorf("unpack project archive on host: %w", err)
+	b.logf("uploading to %s...", remoteDir+"/"+archiveFileName)
+	if err := StageWorkspace(ctx, b.exec, tmpPath, remoteDir); err != nil {
+		return err
 	}
 
 	buildCmd := fmt.Sprintf("docker build -t %s %s %s",
