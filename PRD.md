@@ -62,5 +62,5 @@ EasyDrop is a lightweight deployment automation tool for shipping Docker applica
 ## 5. Open Product Decisions (details in ARCHITECTURE.md §6 / `docs/implementation.md` §9)
 
 - **OD-00 Local build (FR-04):** `build.strategy = "local"` parses but has no implementation; ships remote-only. Needs a product call before `LocalBuilder` (build locally → push to `build.registry` → pull on target) is built.
-- **OD-01 Port split:** single `app.port` (container-internal = host) is the MVP constraint – the image must listen on `app.port`. Optional `app.host_port` will be added on the first real deploy that needs it.
+- **OD-01 Port split:** RESOLVED (M10). `app.port` is the in-container listen port; optional `app.host_port` (default = `app.port`) is the published host port, and the Blue-Green pair is `{host_port, host_port+1}`. Fixed-port images (`nginx:80`) now publish on any free host port, and configs without `host_port` behave exactly as before.
 - **OD-02 Snap-docker hosts:** RESOLVED (M9). Snap-confined daemons cannot see host `/tmp` nor hidden files in `$HOME`, which broke remote builds and compose/swarm state reads. EasyDrop now probes the daemon and fails fast with an actionable `EASYDROP_STAGING_BASE` hint, and keeps compose/swarm state in a non-hidden `$HOME/easydrop` dir on snap hosts. Hosts provisioned by Bootstrapper (apt-docker) are unaffected.
