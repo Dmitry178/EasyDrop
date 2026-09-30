@@ -16,7 +16,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 6:** Ingress Networking Infrastructure Layer – DONE (`NginxManager.Apply/UpdateIngress` + `CertbotManager.EnableSSL`; `infra/*_test.go` green).
 - [x] **Milestone 7:** Single-binary CLI – DONE (`cmd/easydrop` + `internal/cli` + `config.Scaffold`; real localhost deploy/status/logs/BG/rollback verified via built binary).
 - [x] **Milestone 8:** MCP Server – DONE (`internal/mcp` on official SDK + shared `internal/deploy` core; handler/store/e2e tests + live stdio smoke green).
-- [ ] **Milestone 9 (deferred):** Compose/Swarm drivers, encrypted server vault (`manage_server` persistence), snap-docker fail-fast detection (OD-02 B-lite). Open product calls live in §9 (OD-01 ports, OD-02 snap-docker).
+- [x] **Milestone 9:** Compose/Swarm drivers, encrypted server vault, snap-docker fail-fast (OD-02), generated JSON-Schema resource – DONE. Open product calls live in §9 (OD-01 ports).
 
 > Locked decisions (see ARCHITECTURE.md §5): single binary `cmd/easydrop/main.go`;
 > TOML `github.com/pelletier/go-toml/v2`; CLI `cobra` (no `viper`);
@@ -166,7 +166,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
   docker build -t easydrop/[appName]:latest /tmp/easydrop/builds/[appName]/
   ```
 - [x] Purge temporary environment file footprint `/tmp/easydrop/builds/[appName]/` (`rm -rf`, quoted) upon successful build execution. On build failure the staging dir is intentionally kept for debugging.
-- [ ] `LocalBuilder` (FR-04, Milestone 9 or with M4): build locally, push to `BuildConfig.Registry`/`Image`, pull on target. Deferred – M4 stays remote-only.
+- [ ] `LocalBuilder` (FR-04): build locally, push to `BuildConfig.Registry`/`Image`, pull on target. Not implemented – M4/M9 stayed remote-only; see OD-00 in §9.
 
 ---
 
@@ -219,6 +219,36 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 
 ### 5.3. Rollback (`Rollback(ctx, app) error`, same file + interface)
 - [x] Contract (locked, part of `DeploymentDriver`): restores the stopped backup kept by the last Blue-Green deploy. Flow: `docker inspect [app]-active-previous` (missing → fail fast with "no rollback backup", zero mutations) → `docker rm -f [app]-active` → `docker rename [app]-active-previous [app]-active` → `docker start [app]-active` → resolve port via inspect (fallback `app.Port`) → ingress update → probe. Consumes the backup: a second rollback reports "no backup" until the next Blue-Green deploy. Probe failure leaves the restored container running (last resort stays up) and returns an error. Direct-mode deploys keep no backup → `Rollback` explains that.
+
+---
+
+## §5A. Compose & Swarm Drivers (FR-06/FR-07, Milestone 9)
+
+Shared for both drivers:
+- [x] Workspace shipping is the same archiver as M4: `builder.ArchiveWorkspace` + `builder.StageWorkspace` (compose/swarm build on the host, so no `RemoteBuilder` step – `deploy.Run` branches on driver type).
+- [x] Persistent state dir resolved ONCE per driver instance via `printf %s "$HOME"` (`resolveHome`) – never `~` or a quoted `$HOME` inside a path (both break under snap confinement; see OD-02). Layout: `$HOME/easydrop/apps/[app]` on snap hosts, `$HOME/.easydrop/apps/[app]` elsewhere (`stateDir`).
+- [x] `Logs` reuses the shared `streamLines` helper (dedup window 500, ctx-aware polling) extracted from the single driver.
+- [x] Both implement the full `DeploymentDriver` contract incl. `Rollback` on the previous compose/stack file; backup is consumed on rollback and refreshed only by a replacing deploy.
+
+### 5A.1. Compose driver (`internal/core/drivers/compose.go`)
+- [x] `Deploy`: ship workspace → `docker compose -p [project] -f [file] up -d --build --remove-orphans` → verify EVERY service `running` (`compose ps --format '{{.Service}}|{{.State}}'`) → persist `compose.yml` (backing up the replaced one to `compose.previous.yml`, plus `.env` when present) → purge staging → ingress update. Non-running services abort BEFORE persisting; staging is kept for debugging.
+- [x] `Status`: all `running`→`Up`, any `restarting`→`Restarting`, else `Down`; uptime from `compose ps` Status column; missing deployment → `Down` (not an error).
+- [x] `Logs`: `compose logs --tail [n]` across all services (service-prefixed lines).
+- [x] `Rollback`: `test -f compose.previous.yml` (fail fast, zero mutations) → `cp` back → `up -d` WITHOUT `--build` (images are cached) → re-verify running → consume backup.
+- [x] `Teardown`: `compose down` (no `-v` – named volumes are never deleted) + remove the state dir; idempotent.
+
+### 5A.2. Swarm driver (`internal/core/drivers/swarm.go`)
+- [x] MVP scope: single-node swarm only. `ensureSwarm` reads `{{.Swarm.LocalNodeState}}` and runs `docker swarm init` when inactive; multi-node joins are out of scope (reported in code comments, not silently mis-handled).
+- [x] `Deploy`: ship workspace → `docker compose -f [file] build` (service images on the node) → `docker stack deploy -c [file] [stack]` → verify every service at full replicas (`x/x` via `docker stack services --format '{{.Replicas}}'`) → persist stack file + backup → purge staging → ingress.
+- [x] `Status`: all services at full replicas → `Up`, otherwise `Down`; missing deployment → `Down`.
+- [x] `Logs`: per-service `docker service logs --tail [n]` with `==> [service] <==` headers.
+- [x] `Rollback` (previous stack file, no rebuild) and `Teardown` (`docker stack ls` membership check → `docker stack rm` → remove state dir); both idempotent.
+- [x] Registry-based image distribution for multi-node clusters is out of MVP scope.
+
+### 5A.3. Driver selection (`internal/deploy/deploy.go`)
+- [x] `NewDriver(cfg, ex, srcDir)` switches on `driver.type` → `SingleDriver` / `ComposeDriver` / `SwarmDriver`, wiring ingress when `nginx.domain` is set; unknown type errors out. `Status`/`Logs`/`Rollback` all route through it (no driver hardcoding left in the interface layer).
+- [x] Blue-Green is rejected for compose/swarm up front: `blue-green is only supported by the single driver`.
+- [x] Verified: live Compose smoke on the snap-docker dev host – `init` → `deploy` (2 services) → `status` (`Up`) → `logs` (real service output) → re-deploy (backup created) → `rollback` (restored, backup consumed) → teardown; containers, images and state dirs cleaned afterwards.
 
 ---
 
@@ -283,13 +313,23 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 
 - [x] Serve stdio JSON-RPC via `easydrop mcp-server` using the official `modelcontextprotocol/go-sdk` v1.8.0 (locked). `internal/mcp/server.go`: `NewServer()` + `Run(ctx)` over `mcp.StdioTransport{}`; `internal/cli/mcpserver.go` wires the cobra subcommand with signal-aware ctx. Single `internal/version.Version` (`0.1.0`, ldflags-overridable) feeds both `--version` and MCP `serverInfo`.
 - [x] One core, two interfaces (locked): the deploy pipeline lives in `internal/deploy/` (`Options`, `Run`, `LoadConfig`, `ResolveAppName`, `ApplyFlags`, `Status`, `Logs` with collection cap, `Rollback`, `Init`); `internal/cli` commands are thin wrappers, MCP handlers call the same functions. No CLI↔MCP imports.
-- [x] Tools map 1:1 to `docs/mcp-spec.md`: `init_project`, `deploy_app`, `get_status`, `get_logs`, `rollback_app`, `manage_server`; resources `easydrop://docs/schema` (static JSON Schema mirroring `internal/models`; struct-generated output deferred to M9) and `easydrop://docs/troubleshooting` (static runbook). Typed I/O with `jsonschema` tags; app failures return `isError` tool results (not protocol errors); `follow` log collection capped at 2000 lines.
-- [x] `manage_server` persistence: `~/.easydrop/servers.toml` (dir `0700`, file `0600`, upsert by host+user; `EASYDROP_SERVERS_FILE` override for tests); encrypted vault is deferred to Milestone 9. Secrets never echoed in messages or logs (tested).
+- [x] Tools map 1:1 to `docs/mcp-spec.md`: `init_project`, `deploy_app`, `get_status`, `get_logs`, `rollback_app`, `manage_server`; resources `easydrop://docs/schema` (**generated** by reflection over `models.Config` – `schemaMeta` supplies descriptions/defaults/enums, missing entry = error, so schema can never drift from the parser) and `easydrop://docs/troubleshooting` (static runbook). Typed I/O with `jsonschema` tags; app failures return `isError` tool results (not protocol errors); `follow` log collection capped at 2000 lines.
+- [x] `manage_server` persistence: **encrypted** vault `~/.easydrop/servers.vault` – AES-256-GCM, scrypt `(N=32768, r=8, p=1)`, dir `0700`, file `0600`, upsert by host+user. Key material comes only from `EASYDROP_VAULT_PASSWORD` (no prompt – MCP is non-interactive; fail closed). Legacy plaintext `servers.toml` is imported once and renamed `servers.toml.migrated`. `EASYDROP_SERVERS_FILE` overrides the path. Secrets never echoed in messages or logs (tested).
 - [x] Verified: unit tests (store round-trip/perms/validation, handler arg validation, schema registration) + in-process e2e with a real SDK client (`e2e_test.go`: tools/list, init→EXPOSE detect, manage add + secret-leak check, resources, status-without-config isError) + live stdio smoke against the built binary (initialize, tools/list, init_project, manage_server, get_status error path, resources/list+read).
 
 ---
 
 ## §9. Open Decisions (require a product call – found during M4/M5 smoke tests)
+
+### OD-00: Local build strategy (FR-04)
+- **Context:** `build.strategy = "local"` is accepted by the parser and the
+  `Registry`/`Image` fields exist, but no `LocalBuilder` is implemented –
+  `RemoteBuilder` is the only build path (M4 decision).
+- **Options:** A – keep remote-only and reject `strategy = "local"` with an
+  explicit error; B – implement `LocalBuilder` (build locally, push to
+  `build.registry`, pull on target) – required for CI runners without SSH.
+- **Status:** OPEN. Ships as remote-only; needs a product call before M4's
+  `LocalBuilder` is picked up.
 
 ### OD-01: Split container-internal vs host-published ports?
 - **Context:** `app.port` currently plays two roles: the container's internal
@@ -326,5 +366,13 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
     message instead of the cryptic daemon error. Cheap, prevents confusion.
   - **C:** default staging to `$HOME/.easydrop/builds`. Rejected for now –
     weakens the locked `/tmp` default for all hosts to work around one distro quirk.
-- **Status:** OPEN. Proposal: schedule **B-lite** with M6/M9; until then the
-  override + this note are the documented behavior.
+- **Status:** RESOLVED in M9 (option **B-lite**). `builder.IsSnapConfinedDaemon`
+  probes `docker info` once; with `/tmp`-based staging it aborts early with
+  the actionable `EASYDROP_STAGING_BASE` hint instead of the daemon's opaque
+  `path ... not found`. Second snap limitation found during the M9 Compose
+  smoke and also handled: snapd's home interface blocks hidden files in
+  `$HOME`, so the compose/swarm state dir is `$HOME/easydrop/apps` (no dot)
+  on snap hosts and `$HOME/.easydrop/apps` elsewhere.
+- **Verified:** snap host (this dev box) – Compose deploy → status → logs →
+  re-deploy (backup created) → rollback, all green with the non-hidden state
+  path.
