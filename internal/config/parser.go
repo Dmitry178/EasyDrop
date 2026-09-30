@@ -75,6 +75,28 @@ func ApplyDefaults(cfg *models.Config) error {
 		cfg.App.HealthCheckPath = "/"
 	}
 
+	// Port split (M10): `port` is the in-container port, `host_port` the
+	// published one. Omitted host_port keeps the pre-M10 behavior.
+	if err := validatePort(cfg.App.Port, "app.port"); err != nil {
+		return err
+	}
+	if cfg.App.HostPort == 0 {
+		cfg.App.HostPort = cfg.App.Port
+	}
+	if err := validatePort(cfg.App.HostPort, "app.host_port"); err != nil {
+		return err
+	}
+	if cfg.App.HostPort == 65535 {
+		return fmt.Errorf("validation error: app.host_port 65535 leaves no port for the Blue-Green pair")
+	}
+
+	return nil
+}
+
+func validatePort(port int, field string) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("validation error: %s must be 1-65535, got %d", field, port)
+	}
 	return nil
 }
 
