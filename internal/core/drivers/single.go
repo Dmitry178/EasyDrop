@@ -365,46 +365,12 @@ func (d *SingleDriver) Logs(ctx context.Context, appName string, lines int, foll
 	if lines < 0 {
 		lines = 0
 	}
+	tail := fmt.Sprintf("docker logs --tail %d %s", lines, q(activeName(appName)))
 	ch := make(chan string, 100)
-	go func() {
-		defer close(ch)
-		seen := map[string]bool{}
-		var recent []string
-		emit := func(out string) {
-			for _, line := range strings.Split(out, "\n") {
-				if line == "" || seen[line] {
-					continue
-				}
-				seen[line] = true
-				recent = append(recent, line)
-				if len(recent) > followDedupWindow {
-					delete(seen, recent[0])
-					recent = recent[1:]
-				}
-				select {
-				case ch <- line:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-		tail := fmt.Sprintf("docker logs --tail %d %s", lines, q(activeName(appName)))
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			out, _, _, err := d.exec.ExecCommand(ctx, tail)
-			if err == nil {
-				emit(out)
-			}
-			if !follow {
-				return
-			}
-			if !sleepCtx(ctx, d.followInterval()) {
-				return
-			}
-		}
-	}()
+	go streamLines(ctx, func(ctx context.Context) (string, error) {
+		out, _, _, err := d.exec.ExecCommand(ctx, tail)
+		return out, err
+	}, follow, d.followInterval(), ch)
 	return ch, nil
 }
 
