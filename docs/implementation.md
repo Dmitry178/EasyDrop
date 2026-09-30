@@ -11,13 +11,14 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 1:** Configuration Parsing Architecture (`internal/config` & `internal/models`) – DONE. Stack: `github.com/pelletier/go-toml/v2`.
 - [x] **Milestone 2:** Host Environment Abstraction Layer – DONE (`CommandExecutor` with `Close()`, `SSHExecutor`, `LocalExecutor`, factory; `internal/core/*_test.go` green).
 - [x] **Milestone 3:** Target Environment Autonomic Bootstrapper – DONE (`Bootstrapper` + runtime tag/arch resolution; `bootstrap_test.go` green).
-- [x] **Milestone 4:** Automated Source Compiling Engine – DONE (`RemoteBuilder` + tar.gz archiver with .dockerignore; `builder/*_test.go` green; `LocalBuilder` deferred to M9).
+- [x] **Milestone 4:** Automated Source Compiling Engine – DONE (`RemoteBuilder` + tar.gz archiver with .dockerignore; `LocalBuilder` delivered in M11).
 - [x] **Milestone 5:** Single Container Orchestration Driver – DONE (`SingleDriver` direct default + opt-in Blue-Green on the {Port, Port+1} pair, backup + `Rollback`, Status/Logs/Teardown; `drivers/single_test.go` green).
 - [x] **Milestone 6:** Ingress Networking Infrastructure Layer – DONE (`NginxManager.Apply/UpdateIngress` + `CertbotManager.EnableSSL`; `infra/*_test.go` green).
 - [x] **Milestone 7:** Single-binary CLI – DONE (`cmd/easydrop` + `internal/cli` + `config.Scaffold`; real localhost deploy/status/logs/BG/rollback verified via built binary).
 - [x] **Milestone 8:** MCP Server – DONE (`internal/mcp` on official SDK + shared `internal/deploy` core; handler/store/e2e tests + live stdio smoke green).
 - [x] **Milestone 9:** Compose/Swarm drivers, encrypted server vault, snap-docker fail-fast (OD-02), generated JSON-Schema resource – DONE.
 - [x] **Milestone 10:** Port split `app.port` / `app.host_port` (resolves OD-01) – DONE (config defaults + validation, SingleDriver pair, schema meta, live smoke on a fixed-port image).
+- [x] **Milestone 11:** `LocalBuilder` – registry strategy `build.strategy = "local"` (resolves OD-00, FR-04) – DONE (`builder/local.go`, deploy wiring, live smoke against a real `registry:2`).
 
 > Locked decisions (see ARCHITECTURE.md §5): single binary `cmd/easydrop/main.go`;
 > TOML `github.com/pelletier/go-toml/v2`; CLI `cobra` (no `viper`);
@@ -169,7 +170,15 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
   docker build -t easydrop/[appName]:latest /tmp/easydrop/builds/[appName]/
   ```
 - [x] Purge temporary environment file footprint `/tmp/easydrop/builds/[appName]/` (`rm -rf`, quoted) upon successful build execution. On build failure the staging dir is intentionally kept for debugging.
-- [ ] `LocalBuilder` (FR-04): build locally, push to `BuildConfig.Registry`/`Image`, pull on target. Not implemented – M4/M9 stayed remote-only; see OD-00 in §9.
+- [x] `LocalBuilder` (FR-04, delivered in **M11**, see §4.3): build locally, push to `build.registry`, pull on the target host.
+
+### 4.3. Local Builder – registry strategy (`internal/core/builder/local.go`, Milestone 11)
+- [x] `LocalBuilder{ SrcDir, Out, CommandTimeout }` runs `docker build → push` on the machine executing EasyDrop (NOT the target): the image crosses the wire, the workspace never does. `CommandTimeout` defaults to 30m for large builds.
+- [x] `TargetRef(cfg) (string, error)` resolves `[registry/]<image>:<tag>`: `build.image` may be `name`, `name:tag` or `ns/name:tag`; registry is prepended, trailing `/` trimmed, tag defaults to `latest`. Validation: `build.registry` required and scheme-free (`https://` rejected – docker refs never carry one), registry/repo/tag charset-checked, app name validated.
+- [x] `build.no_cache` / `deploy --no-cache` adds `--no-cache` to the local build too.
+- [x] `checkLocalStaging`: snap-confined daemons cannot see `/tmp` build contexts (OD-02) – fails fast with an actionable message instead of the daemon's opaque `failed to read dockerfile`.
+- [x] `deploy.Run` wiring: with `build.strategy = "local"` the remote `RemoteBuilder` step is SKIPPED, `app.Image` is pinned to the pushed ref, and the target runs `docker pull <ref>` before the driver deploys. Rejected for compose/swarm with an explicit error (those build their services on the host). `SingleDriver.imageRef(app)` returns `app.Image` when set, otherwise `easydrop/<name>:latest`.
+- [x] Verified: real `registry:2` on :15500 – local build → push → pull on target → container reported `localhost:15500/localsmoke/localsmoke:latest` as its image, `status` Up, curl answered. Registry, images, containers and scratch dirs removed afterwards.
 
 ---
 
@@ -325,14 +334,14 @@ Shared for both drivers:
 ## §9. Open Decisions (require a product call – found during M4/M5 smoke tests)
 
 ### OD-00: Local build strategy (FR-04)
-- **Context:** `build.strategy = "local"` is accepted by the parser and the
-  `Registry`/`Image` fields exist, but no `LocalBuilder` is implemented –
-  `RemoteBuilder` is the only build path (M4 decision).
-- **Options:** A – keep remote-only and reject `strategy = "local"` with an
-  explicit error; B – implement `LocalBuilder` (build locally, push to
-  `build.registry`, pull on target) – required for CI runners without SSH.
-- **Status:** OPEN. Ships as remote-only; needs a product call before M4's
-  `LocalBuilder` is picked up.
+- **Context (original):** `build.strategy = "local"` parsed fine, but only
+  `RemoteBuilder` existed, so registry-based builds were impossible.
+- **Decision (M11, option B):** implemented `LocalBuilder` – build on the
+  machine running EasyDrop, push to `build.registry`, pull on the target host.
+  Useful for CI runners without SSH, air-gapped targets, and shared registries.
+  Scope: `single` driver only (compose/swarm build on the host and are
+  rejected with an explicit error for `local`).
+- **Status:** RESOLVED in M11. See §4.3.
 
 ### OD-01: Split container-internal vs host-published ports?
 - **Context (original):** `app.port` played two roles – the container's internal
