@@ -84,6 +84,7 @@ type CommandExecutor interface {
 | 5 | Config scope | Extended `Config` (registry / healthcheck / compose fields) | Avoids uncovered requirements: FR-04 local build needs `Registry/Image/NoCache`, FR-12 needs `HealthCheckPath`, FR-06 needs `ComposeFile` |
 | 6 | Toolchain | Go ≥ 1.27 (`go 1.27` in `go.mod`; system SDK `~/go/go1.27.1` first on `PATH`) | Latest stable at setup; `x/crypto` needs ≥ 1.26 |
 | 7 | Blue-Green opt-in | Direct in-place redeploy by default; Blue-Green via `driver.blue_green` / `deploy --blue-green` | Zero-downtime must not surprise: extra port, backup container, longer pipeline – explicit choice |
+| 7b | Build strategies | `remote` (default): ship workspace, build on target, no registry. `local`: build on the EasyDrop machine, push to `build.registry`, pull on target (single driver only) | Registry-free stays the default; CI runners and shared registries get a first-class path |
 | 8 | Rollback | `Rollback(ctx, app)` on the driver; backup = stopped `[app]-active-previous` kept by Blue-Green deploys, consumed on rollback, purged by teardown | Image-tag juggling needs builder changes; a stopped backup container is driver-local, exact and fast |
 
 ## 6. Open Decisions (require a product call – details in `docs/implementation.md §9`)
