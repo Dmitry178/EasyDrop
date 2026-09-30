@@ -108,6 +108,7 @@ func TestE2EInitAndResources(t *testing.T) {
 
 func TestE2EManageServer(t *testing.T) {
 	t.Setenv("EASYDROP_SERVERS_FILE", filepath.Join(t.TempDir(), "servers.toml"))
+	t.Setenv("EASYDROP_VAULT_PASSWORD", "e2e-password")
 	sess := e2eClient(t)
 	res := callTool(t, sess, "manage_server", map[string]any{
 		"action": "add",
