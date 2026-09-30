@@ -514,3 +514,37 @@ func TestPublishedPortFallsBackToPort(t *testing.T) {
 		t.Errorf("publishedPort() = %d, want 18080", got)
 	}
 }
+
+func TestDeployUsesPushedRegistryImage(t *testing.T) {
+	f := &queueFake{}
+	f.on("docker info", okResp(""))
+	f.on("docker rm -f 'my-api-active'", okResp(""))
+	f.on("docker run -d --name 'my-api-active'", okResp("abc"))
+	f.on("curl ", okResp("200"))
+
+	app := singleAppWithPorts("my-api", 8080, 18080)
+	app.Image = "ghcr.io/myorg/my-api:2.1"
+
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	if err := d.Deploy(context.Background(), app); err != nil {
+		t.Fatalf("Deploy() unexpected error: %v", err)
+	}
+	if !f.ran("'ghcr.io/myorg/my-api:2.1'") {
+		t.Errorf("must run the pushed registry image, ran: %v", f.calls)
+	}
+	if f.ran("easydrop/my-api") {
+		t.Errorf("must not fall back to the remote default image, ran: %v", f.calls)
+	}
+}
+
+func TestImageRefFallsBackToRemoteDefault(t *testing.T) {
+	app := singleAppWithPorts("my-api", 8080, 18080)
+	if got := imageRef(app); got != "easydrop/my-api:latest" {
+		t.Errorf("imageRef() = %q, want remote default", got)
+	}
+	app.Image = "registry.example.com:5000/team/web:1.2"
+	if got := imageRef(app); got != app.Image {
+		t.Errorf("imageRef() = %q, want %q", got, app.Image)
+	}
+}
