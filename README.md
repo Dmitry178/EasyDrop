@@ -36,7 +36,8 @@ Edit the generated `easydrop.toml` to map your target server details and domain:
 ```toml
 [app]
 name = "my-awesome-api"
-port = 8080
+port = 8080             # port your app listens on INSIDE the container
+# host_port = 18080     # optional: port published on the host (defaults to `port`)
 
 [server]
 host = "185.178.21.42" # Use "localhost" or "127.0.0.1" for local deployment
