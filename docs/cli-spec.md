@@ -16,10 +16,10 @@ Initializes a new project workspace in the current working directory.
 
 ### 1.2. `easydrop deploy`
 Triggers the comprehensive application build and deployment pipeline onto the target environment.
-- **Behavior:** Parses the active `easydrop.toml`, inspects host server configurations and runtime engines, compiles the deployment container image, updates ingress networking routes, and mounts the active containers.
+- **Behavior:** Parses the active `easydrop.toml`, inspects host server configurations and runtime engines, produces the image, updates ingress networking routes, and mounts the active containers. Image production follows `build.strategy`: `remote` (default) ships the workspace and builds on the host; `local` builds here, pushes to `build.registry` and pulls on the host – that strategy requires `build.registry` and the `single` driver.
 - **Flags:**
   - `-c, --config string`: Explicit path targeting the custom configuration blueprint file (defaults to `./easydrop.toml`).
-  - `--no-cache`: Instruct the host compilation layer to completely bypass the Docker build cache when building the image (overrides `build.no_cache` from `easydrop.toml` to `true` for this run).
+  - `--no-cache`: Bypass the Docker build cache for this run (overrides `build.no_cache` from `easydrop.toml` to `true`). Applies to both strategies: the on-host build (`build.strategy = "remote"`) and the local build + push (`"local"`).
   - `--blue-green`: Enable zero-downtime Blue-Green deployment for this run (overrides `driver.blue_green` from `easydrop.toml` to `true`). Default (flag absent, config false): direct in-place redeploy with brief downtime.
   - `--skip-bootstrap`: Skip host provisioning (Bootstrapper). Use when docker is already installed and privileges are arranged (dev boxes without passwordless sudo, CI runners, managed hosts).
 
