@@ -13,6 +13,7 @@ import (
 func tempStore(t *testing.T) {
 	t.Helper()
 	t.Setenv("EASYDROP_SERVERS_FILE", filepath.Join(t.TempDir(), "servers.toml"))
+	t.Setenv("EASYDROP_VAULT_PASSWORD", "test-vault-password")
 }
 
 func TestStoreAddRemoveRoundTrip(t *testing.T) {
@@ -58,13 +59,70 @@ func TestStoreFilePerms(t *testing.T) {
 	if _, err := ManageServer("add", "h", "u", "", "pw"); err != nil {
 		t.Fatal(err)
 	}
+	// EASYDROP_SERVERS_FILE points at legacy .toml; the vault is its sibling.
 	path := os.Getenv("EASYDROP_SERVERS_FILE")
-	info, err := os.Stat(path)
+	vault := path[:len(path)-len(".toml")] + ".vault"
+	info, err := os.Stat(vault)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if info.Mode().Perm() != 0600 {
-		t.Errorf("store perm = %o, want 600", info.Mode().Perm())
+		t.Errorf("vault perm = %o, want 600", info.Mode().Perm())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("no plaintext file must remain, stat err = %v", err)
+	}
+}
+
+func TestStoreRequiresPassword(t *testing.T) {
+	t.Setenv("EASYDROP_SERVERS_FILE", filepath.Join(t.TempDir(), "servers.toml"))
+	os.Unsetenv("EASYDROP_VAULT_PASSWORD")
+	if _, err := ManageServer("add", "h", "u", "", ""); err == nil {
+		t.Errorf("vault without password must fail closed")
+	} else if !strings.Contains(err.Error(), "EASYDROP_VAULT_PASSWORD") {
+		t.Errorf("error must name the env var, got: %v", err)
+	}
+}
+
+func TestStoreWrongPasswordFails(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("EASYDROP_SERVERS_FILE", filepath.Join(dir, "servers.toml"))
+	t.Setenv("EASYDROP_VAULT_PASSWORD", "correct")
+	if _, err := ManageServer("add", "h", "u", "", "pw"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EASYDROP_VAULT_PASSWORD", "wrong")
+	if _, err := ManageServer("remove", "h", "u", "", ""); err == nil {
+		t.Errorf("wrong password must fail to open the vault")
+	}
+}
+
+func TestStoreMigratesLegacyTOML(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "servers.toml")
+	legacyContent := "[[servers]]\nhost = 'old.example.com'\nuser = 'root'\nport = 22\n"
+	if err := os.WriteFile(legacy, []byte(legacyContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EASYDROP_SERVERS_FILE", legacy)
+	t.Setenv("EASYDROP_VAULT_PASSWORD", "migrate-me")
+	msg, err := ManageServer("remove", "old.example.com", "root", "", "")
+	if err != nil {
+		t.Fatalf("migrated record must be usable: %v", err)
+	}
+	if !strings.Contains(msg, "removed") {
+		t.Errorf("unexpected message %q", msg)
+	}
+	if _, err := os.Stat(legacy + ".migrated"); err != nil {
+		t.Errorf("legacy file must be retired aside, not deleted: %v", err)
+	}
+	vault := legacy[:len(legacy)-len(".toml")] + ".vault"
+	blob, err := os.ReadFile(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), "old.example.com") {
+		t.Errorf("vault payload must be encrypted, host leaked in cleartext")
 	}
 }
 
