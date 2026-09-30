@@ -24,7 +24,8 @@ func intPtr(v int) *int { return &v }
 // without a meta entry fails TestGenerateSchemaCompleteness — update both.
 var schemaMeta = map[string]fieldMeta{
 	"app.name":              {desc: "docker-compatible lowercase name"},
-	"app.port":              {desc: "container listen port and first host port of the Blue-Green pair", minimum: intPtr(1), maximum: intPtr(65535)},
+	"app.port":              {desc: "port the app listens on inside the container", minimum: intPtr(1), maximum: intPtr(65535)},
+	"app.host_port":         {desc: "port published on the host (defaults to app.port); the Blue-Green pair is {host_port, host_port+1}", minimum: intPtr(1), maximum: intPtr(65534)},
 	"app.health_check_path": {desc: "HTTP path probed for 200 OK during deploys", def: "/"},
 	"server.host":           {desc: "IP/hostname, or localhost/127.0.0.1 for local deploys"},
 	"server.user":           {desc: "SSH user (unused for localhost)"},
