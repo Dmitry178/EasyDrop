@@ -453,3 +453,64 @@ func TestRollbackInvalidName(t *testing.T) {
 		t.Errorf("no host commands must run for invalid name, ran: %v", f.calls)
 	}
 }
+
+func singleAppWithPorts(name string, port, hostPort int) *models.Application {
+	return &models.Application{Config: &models.Config{
+		App:   models.AppConfig{Name: name, Port: port, HostPort: hostPort, HealthCheckPath: "/health"},
+		Nginx: models.NginxConfig{Domain: ""},
+	}}
+}
+
+func TestDeployDirectPublishesHostPort(t *testing.T) {
+	f := &queueFake{}
+	f.on("docker info", okResp(""))
+	f.on("docker rm -f 'my-api-active'", okResp(""))
+	f.on("docker run -d --name 'my-api-active'", okResp("abc"))
+	f.on("curl ", okResp("200"))
+
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	if err := d.Deploy(context.Background(), singleAppWithPorts("my-api", 80, 18080)); err != nil {
+		t.Fatalf("Deploy() unexpected error: %v", err)
+	}
+	if !f.ran("-p 18080:80") {
+		t.Errorf("must publish host 18080 -> internal 80, ran: %v", f.calls)
+	}
+	if f.ran("localhost:80") {
+		t.Errorf("probe must hit the host port, not the internal one, ran: %v", f.calls)
+	}
+}
+
+func TestDeployBlueGreenPairUsesHostPort(t *testing.T) {
+	f := &queueFake{}
+	f.on("docker info", okResp(""))
+	f.on(inspectPrefix, okResp("18080 "))
+	f.on("docker rm -f 'my-api-green'", okResp(""))
+	f.on("docker run -d --name 'my-api-green'", okResp("abc"))
+	f.on("curl ", okResp("200"))
+	f.on("docker rm -f 'my-api-active-previous'", okResp(""))
+	f.on("docker stop 'my-api-active'", okResp(""))
+	f.on("docker rename 'my-api-active' 'my-api-active-previous'", okResp(""))
+	f.on("docker rename", okResp(""))
+
+	d := NewSingleDriver(f)
+	d.BlueGreen = true
+	d.Out = &bytes.Buffer{}
+	if err := d.Deploy(context.Background(), singleAppWithPorts("my-api", 80, 18080)); err != nil {
+		t.Fatalf("Deploy() unexpected error: %v", err)
+	}
+	if !f.ran("-p 18081:80") {
+		t.Errorf("blue-green must alternate on {18080, 18081} keeping internal 80, ran: %v", f.calls)
+	}
+}
+
+func TestPublishedPortFallsBackToPort(t *testing.T) {
+	cfg := &models.Config{App: models.AppConfig{Name: "a", Port: 8080}}
+	if got := publishedPort(cfg); got != 8080 {
+		t.Errorf("publishedPort() = %d, want 8080 when host_port unset", got)
+	}
+	cfg.App.HostPort = 18080
+	if got := publishedPort(cfg); got != 18080 {
+		t.Errorf("publishedPort() = %d, want 18080", got)
+	}
+}
