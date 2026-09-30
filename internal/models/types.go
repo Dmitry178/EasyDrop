@@ -10,8 +10,13 @@ type Config struct {
 }
 
 type AppConfig struct {
-	Name            string `toml:"name"`
-	Port            int    `toml:"port"`
+	Name string `toml:"name"`
+	// Port is the port the app listens on INSIDE the container.
+	Port int `toml:"port"`
+	// HostPort is the port published on the host. Optional: when omitted it
+	// defaults to Port, so existing configs keep their behavior. The
+	// Blue-Green managed pair is {HostPort, HostPort+1}.
+	HostPort        int    `toml:"host_port,omitempty"`
 	HealthCheckPath string `toml:"health_check_path,omitempty"` // Default: "/"
 }
 
