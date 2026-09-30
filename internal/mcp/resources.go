@@ -6,45 +6,6 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// schemaDoc is the easydrop.toml reference served at easydrop://docs/schema.
-// It mirrors internal/models; generated-from-structs output stays a
-// Milestone-9 nicety, this static copy is the locked MVP contract.
-const schemaDoc = `{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "easydrop.toml",
-  "type": "object",
-  "properties": {
-    "app": {"type": "object", "required": ["name"],
-      "properties": {
-        "name": {"type": "string", "description": "docker-compatible lowercase name"},
-        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "health_check_path": {"type": "string", "default": "/"}}},
-    "server": {"type": "object", "required": ["host"],
-      "properties": {
-        "host": {"type": "string", "description": "IP/hostname, or localhost/127.0.0.1 for local"},
-        "user": {"type": "string"},
-        "ssh_key": {"type": "string", "default": "~/.ssh/id_rsa"},
-        "password": {"type": "string"},
-        "port": {"type": "integer", "default": 22}}},
-    "build": {"type": "object",
-      "properties": {
-        "strategy": {"type": "string", "enum": ["remote", "local"], "default": "remote"},
-        "registry": {"type": "string"},
-        "image": {"type": "string"},
-        "no_cache": {"type": "boolean", "default": false}}},
-    "driver": {"type": "object",
-      "properties": {
-        "type": {"type": "string", "enum": ["single", "compose", "swarm"], "default": "single"},
-        "compose_file": {"type": "string", "default": "docker-compose.yml"},
-        "blue_green": {"type": "boolean", "default": false}}},
-    "nginx": {"type": "object",
-      "properties": {
-        "domain": {"type": "string"},
-        "ssl": {"type": "boolean"},
-        "email": {"type": "string"}}}
-  }
-}`
-
 // troubleshootingDoc is the self-healing runbook at
 // easydrop://docs/troubleshooting.
 const troubleshootingDoc = `# EasyDrop troubleshooting runbook
@@ -80,12 +41,16 @@ const troubleshootingDoc = `# EasyDrop troubleshooting runbook
 `
 
 func addResources(s *sdk.Server) {
+	schemaText, schemaErr := GenerateSchema()
 	s.AddResource(
 		&sdk.Resource{URI: "easydrop://docs/schema", Name: "schema",
-			Description: "JSON Schema for easydrop.toml", MIMEType: "application/json"},
+			Description: "JSON Schema for easydrop.toml (generated from internal/models)", MIMEType: "application/json"},
 		func(_ context.Context, _ *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+			if schemaErr != nil {
+				return nil, schemaErr
+			}
 			return &sdk.ReadResourceResult{Contents: []*sdk.ResourceContents{
-				{URI: "easydrop://docs/schema", MIMEType: "application/json", Text: schemaDoc},
+				{URI: "easydrop://docs/schema", MIMEType: "application/json", Text: schemaText},
 			}}, nil
 		})
 	s.AddResource(
