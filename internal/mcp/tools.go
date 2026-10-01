@@ -130,6 +130,25 @@ type serverRecord struct {
 	Password string `json:"password,omitempty" jsonschema:"SSH password (stored with 0600, never logged)"`
 }
 
+type teardownInput struct {
+	AppName    string `json:"app_name" jsonschema:"application name to remove"`
+	ConfigPath string `json:"config_path,omitempty" jsonschema:"path to easydrop.toml"`
+}
+
+func handleTeardown(ctx context.Context, _ *sdk.CallToolRequest, in teardownInput) (*sdk.CallToolResult, textOut, error) {
+	if strings.TrimSpace(in.AppName) == "" {
+		return errResult("app_name is required")
+	}
+	path := strings.TrimSpace(in.ConfigPath)
+	if path == "" {
+		path = defaultConfigPath
+	}
+	if err := deploy.Teardown(ctx, path, in.AppName); err != nil {
+		return errResult(fmt.Sprintf("teardown failed: %v", err))
+	}
+	return okResult(fmt.Sprintf("%s torn down (volumes kept)", in.AppName))
+}
+
 type manageInput struct {
 	Action string       `json:"action" jsonschema:"add or remove"`
 	Config serverRecord `json:"config" jsonschema:"server record"`
