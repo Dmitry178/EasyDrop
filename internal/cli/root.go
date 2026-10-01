@@ -12,7 +12,7 @@ func rootCmd() *cobra.Command {
 		Short:   "PaaS-like Docker deploys to your own Linux hosts",
 		Version: version.Version,
 	}
-	root.AddCommand(initCmd(), deployCmd(), statusCmd(), logsCmd(), rollbackCmd(), mcpServerCmd())
+	root.AddCommand(initCmd(), deployCmd(), statusCmd(), logsCmd(), rollbackCmd(), teardownCmd(), mcpServerCmd())
 	return root
 }
 
