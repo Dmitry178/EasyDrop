@@ -21,7 +21,7 @@ type fieldMeta struct {
 func intPtr(v int) *int { return &v }
 
 // schemaMeta documents every leaf of models.Config. Adding a config field
-// without a meta entry fails TestGenerateSchemaCompleteness — update both.
+// without a meta entry fails TestGenerateSchemaCompleteness – update both.
 var schemaMeta = map[string]fieldMeta{
 	"app.name":              {desc: "docker-compatible lowercase name"},
 	"app.port":              {desc: "port the app listens on inside the container", minimum: intPtr(1), maximum: intPtr(65535)},
@@ -29,8 +29,8 @@ var schemaMeta = map[string]fieldMeta{
 	"app.health_check_path": {desc: "HTTP path probed for 200 OK during deploys", def: "/"},
 	"server.host":           {desc: "IP/hostname, or localhost/127.0.0.1 for local deploys"},
 	"server.user":           {desc: "SSH user (unused for localhost)"},
-	"server.ssh_key":        {desc: "private key path, ~ expands", def: "~/.ssh/id_rsa"},
-	"server.password":       {desc: "SSH password fallback (never logged)"},
+	"server.ssh_key":        {desc: "private key path, ~ expands; ${VAR} is resolved from the environment or .easydrop.env/.env", def: "~/.ssh/id_rsa"},
+	"server.password":       {desc: "SSH password fallback (never logged); keep it out of git as ${VAR} – resolved from the environment or .easydrop.env/.env"},
 	"server.port":           {desc: "SSH port", def: 22},
 	"build.strategy":        {desc: "remote builds on the host (no registry); local builds and pushes", enum: []string{"remote", "local"}, def: "remote"},
 	"build.registry":        {desc: "registry for local builds (FR-04)"},
