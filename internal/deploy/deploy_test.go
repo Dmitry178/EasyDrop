@@ -3,6 +3,8 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -104,5 +106,28 @@ func TestBuildLocalAndPullRequiresRegistry(t *testing.T) {
 	err := buildLocalAndPull(context.Background(), cfg, &models.Application{Config: cfg}, core.NewLocalExecutor(), t.TempDir(), nil)
 	if err == nil {
 		t.Fatalf("local strategy without registry must fail")
+	}
+}
+
+func TestTeardownRoutesToDriver(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "easydrop.toml")
+	body := `
+[app]
+name = "my-api"
+port = 8080
+[server]
+host = "localhost"
+user = "root"
+[driver]
+type = "single"
+`
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Single driver teardown is idempotent: nothing deployed -> nil error,
+	// and it must not require the config's app to exist on the host.
+	if err := Teardown(context.Background(), path, ""); err != nil {
+		t.Errorf("Teardown() on a clean host must be nil, got: %v", err)
 	}
 }
