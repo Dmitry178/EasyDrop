@@ -134,7 +134,7 @@ func Run(ctx context.Context, opts Options, out func(string)) error {
 		switch cfg.Build.Strategy {
 		case "local":
 			// FR-04: build on THIS machine, push to the registry, and let
-			// the host pull the image — no workspace upload at all.
+			// the host pull the image – no workspace upload at all.
 			if err := buildLocalAndPull(ctx, cfg, app, ex, srcDir, out); err != nil {
 				return err
 			}
@@ -256,6 +256,22 @@ func setupDriver(configPath, appName string) (*models.Config, core.CommandExecut
 		return nil, nil, "", err
 	}
 	return cfg, ex, name, nil
+}
+
+// Teardown removes the deployment: containers, the Blue-Green backup, the
+// compose/swarm state dir and (compose) the stack. Volumes are never deleted –
+// data outlives the deploy. Idempotent: nothing deployed is not an error.
+func Teardown(ctx context.Context, configPath, appName string) error {
+	cfg, ex, name, err := setupDriver(configPath, appName)
+	if err != nil {
+		return err
+	}
+	defer ex.Close()
+	drv, err := NewDriver(cfg, ex, "")
+	if err != nil {
+		return err
+	}
+	return drv.Teardown(ctx, name)
 }
 
 // Init scaffolds easydrop.toml in dir from its contents.
