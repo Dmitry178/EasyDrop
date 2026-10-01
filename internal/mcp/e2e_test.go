@@ -11,7 +11,7 @@ import (
 )
 
 // e2eClient spins up the real server with an in-memory transport pair and a
-// real SDK client — the same wire both sides speak over stdio, without
+// real SDK client – the same wire both sides speak over stdio, without
 // depending on process pipes.
 func e2eClient(t *testing.T) *sdk.ClientSession {
 	t.Helper()
@@ -134,5 +134,31 @@ func TestE2EStatusWithoutConfigIsError(t *testing.T) {
 	res := callTool(t, sess, "get_status", map[string]any{"app_name": "my-api"})
 	if !res.IsError {
 		t.Errorf("missing config must yield IsError, got %s", toolText(t, res))
+	}
+}
+
+func TestE2ETeardownToolRegistered(t *testing.T) {
+	sess := e2eClient(t)
+	res, err := sess.ListTools(context.Background(), &sdk.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	found := false
+	for _, tl := range res.Tools {
+		if tl.Name == "teardown_app" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("teardown_app tool must be registered")
+	}
+}
+
+func TestE2ETeardownWithoutConfigIsError(t *testing.T) {
+	t.Chdir(t.TempDir()) // no easydrop.toml
+	sess := e2eClient(t)
+	res := callTool(t, sess, "teardown_app", map[string]any{"app_name": "my-api"})
+	if !res.IsError {
+		t.Errorf("teardown without config must yield IsError, got %s", toolText(t, res))
 	}
 }
