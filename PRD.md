@@ -19,6 +19,7 @@ EasyDrop is a lightweight deployment automation tool for shipping Docker applica
 ### 2.1. Configuration Management
 - **FR-01:** The system must initialize and parse a declarative project configuration file using the TOML format.
 - **FR-02:** The tool must automatically scan the current working directory (detecting language stacks, ports, and Dockerfiles) to generate a pre-populated boilerplate configuration.
+- **FR-02A (Secret resolution):** The system must support `${VAR}` references in the string fields of the configuration, resolved at parse time from the process environment and from optional `.easydrop.env` / `.env` files located next to the config (precedence: process environment > `.easydrop.env` > `.env`). An unset required reference is a hard error that names the field but never the value. Those files are git-ignored and must be excluded from the archive shipped to the target host.
 
 ### 2.2. Artifact Build Strategies
 - **FR-03 (Remote Build):** The system must support shipping raw source code to the target host to build the Docker image directly on the server, removing external registry dependencies.
@@ -43,7 +44,7 @@ EasyDrop is a lightweight deployment automation tool for shipping Docker applica
 ## 3. Non-Functional Requirements
 
 - **NFR-01 (Idempotency):** Executing a deployment workflow multiple times without changes must not trigger resource duplication or introduce application downtime.
-- **NFR-02 (Security):** Local storage of server credentials must be isolated and secured against unauthorized access. Private SSH keys and passwords must never be exposed in system logs.
+- **NFR-02 (Security):** Local storage of server credentials must be isolated and secured against unauthorized access. Private SSH keys and passwords must never be exposed in system logs, in error messages, or in the workspace archive transferred to the target host.
 - **NFR-03 (Portability):** The tool must ship as a single compiled executable supporting Linux, macOS, and Windows across both amd64 and arm64 architectures. The same binary serves CLI and MCP: `easydrop mcp-server` switches it into MCP stdio mode (no separate `easydrop-mcp` binary).
 
 ## 4. Locked Tech Decisions (binding; details in ARCHITECTURE.md §5)
@@ -65,3 +66,4 @@ EasyDrop is a lightweight deployment automation tool for shipping Docker applica
 - **OD-00 Local build (FR-04):** RESOLVED (M11). `build.strategy = "local"` builds the image on the machine running EasyDrop, pushes it to `build.registry` and pulls it on the target host – nothing but the image crosses the wire. Supported by the `single` driver; compose/swarm build on the host and reject it explicitly.
 - **OD-01 Port split:** RESOLVED (M10). `app.port` is the in-container listen port; optional `app.host_port` (default = `app.port`) is the published host port, and the Blue-Green pair is `{host_port, host_port+1}`. Fixed-port images (`nginx:80`) now publish on any free host port, and configs without `host_port` behave exactly as before.
 - **OD-02 Snap-docker hosts:** RESOLVED (M9, expanded in M12). A snap-confined `dockerd` has its own mount namespace with three limits: no host `/tmp` (breaks workspace staging/builds), no hidden `dot-` files in `$HOME` (breaks compose/swarm state and dot-dir build contexts), and a synthetic `$HOME` inside daemon-spawned commands (breaks `'$HOME/...'` in composed commands). EasyDrop probes the daemon once, fails fast with an actionable `EASYDROP_STAGING_BASE` hint, stores compose/swarm state in a non-hidden `~/easydrop` on snap hosts, and resolves `$HOME` before use. Full reference: `docs/implementation.md §10`. Hosts provisioned by Bootstrapper (apt-docker) are unaffected.
+- **OD-03 Credentials in version control:** RESOLVED (M13). A literal `server.password` lives in git; the encrypted vault does not help because `manage_server` is MCP-only and nothing in the deploy path reads it. `${VAR}` interpolation plus optional `.easydrop.env`/`.env` (FR-02A) keeps the config committable, and the secret files are excluded from the shipped archive. `ssh-agent` remains the zero-config path for key auth.
