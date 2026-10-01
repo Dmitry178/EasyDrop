@@ -94,6 +94,52 @@ func TestArchiveDefaults(t *testing.T) {
 	}
 }
 
+// TestArchiveExcludesDotEnvSecrets is the security guard for M13: easydrop
+// reads .env / .easydrop.env to interpolate ${VAR} credentials, so they must
+// never be uploaded to the target host inside the build context.
+func TestArchiveExcludesDotEnvSecrets(t *testing.T) {
+	dir := writeFixture(t, map[string]string{
+		"Dockerfile":     "FROM scratch",
+		"main.go":        "package main",
+		".env":           "EASYDROP_SSH_PASSWORD=hunter2",
+		".easydrop.env":  "EASYDROP_SSH_PASSWORD=hunter2",
+		"easydrop.toml":  "server password interpolation",
+		"app/.env":       "nested secret",
+		"app/.keepme.md": "docs",
+	})
+	names := listArchive(t, archiveToBytes(t, dir))
+
+	if !contains(names, "Dockerfile") || !contains(names, "easydrop.toml") {
+		t.Errorf("archive must keep the deployable files, got %v", names)
+	}
+	for _, gone := range []string{".env", ".easydrop.env", "app/.env"} {
+		if contains(names, gone) {
+			t.Errorf("archive must exclude the secret file %q, got %v", gone, names)
+		}
+	}
+}
+
+// TestArchiveDotEnvReincludedByDockerignore keeps the compose escape hatch
+// working: a project that genuinely needs .env in the bundle re-includes it
+// with a negated rule.
+func TestArchiveDotEnvReincludedByDockerignore(t *testing.T) {
+	dir := writeFixture(t, map[string]string{
+		"Dockerfile":         "FROM scratch",
+		"docker-compose.yml": "services: {}",
+		".env":               "COMPOSE_VAR=1",
+		".easydrop.env":      "EASYDROP_SSH_PASSWORD=hunter2",
+		".dockerignore":      "!.env\n",
+	})
+	names := listArchive(t, archiveToBytes(t, dir))
+
+	if !contains(names, ".env") {
+		t.Errorf("!.env in .dockerignore must re-include it, got %v", names)
+	}
+	if contains(names, ".easydrop.env") {
+		t.Errorf("!.env must not re-include .easydrop.env, got %v", names)
+	}
+}
+
 func TestArchiveDockerignore(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"Dockerfile":    "FROM scratch",
