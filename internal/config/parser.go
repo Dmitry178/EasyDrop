@@ -12,7 +12,8 @@ import (
 )
 
 // ParseConfig reads, parses and validates the easydrop.toml at the given path.
-// It applies fallback defaults for optional properties.
+// It resolves ${VAR} references in the string fields, applies fallback defaults
+// for optional properties, and expands server.ssh_key.
 func ParseConfig(path string) (*models.Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -22,6 +23,14 @@ func ParseConfig(path string) (*models.Config, error) {
 	var cfg models.Config
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %q: %w", path, err)
+	}
+
+	// Secrets first: the expansion may fill server.password / server.ssh_key,
+	// and the required-field checks below should report on final values.
+	// Resolution happens before ApplyDefaults so that a ${VAR:-~/.ssh/id_rsa}
+	// default still gets its "~" expanded afterwards.
+	if err := resolveSecrets(&cfg, filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("config %q: %w", path, err)
 	}
 
 	// --- Required fields ---
@@ -115,6 +124,6 @@ func expandTilde(path string) (string, error) {
 	if strings.HasPrefix(path, "~/") {
 		return filepath.Join(home, path[2:]), nil
 	}
-	// "~user/..." form is not supported — return as-is with error context
+	// "~user/..." form is not supported – return as-is with error context
 	return "", fmt.Errorf("unsupported tilde expansion in path %q (only ~/ is supported)", path)
 }
