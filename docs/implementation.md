@@ -2,6 +2,8 @@
 
 This document outlines the chronological execution order, core data contracts, and specific acceptance criteria for each system module. Steps must be developed sequentially. Every micro-task includes a dedicated checkbox to explicitly track progress.
 
+> **Developer workflow:** the repo ships a `Makefile` – `make` lists all targets, `make build` compiles the binary (version stamped from `git describe`), `make verify` is the CI gate (gofmt + `go vet` + tests), `make test-race` runs the race detector, `make cover` writes `bin/coverage.out`, `make release` cross-compiles all six platform binaries with `SHA256SUMS` (NFR-03), and `make smoke` deploys a throwaway app to the local docker daemon end-to-end. See README § Development.
+
 ---
 
 ## §0. Sequence of Execution
