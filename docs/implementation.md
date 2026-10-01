@@ -22,6 +22,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 10:** Port split `app.port` / `app.host_port` (resolves OD-01) – DONE (config defaults + validation, SingleDriver pair, schema meta, live smoke on a fixed-port image).
 - [x] **Milestone 11:** `LocalBuilder` – registry strategy `build.strategy = "local"` (resolves OD-00, FR-04) – DONE (`builder/local.go`, deploy wiring, live smoke against a real `registry:2`).
 - [x] **Milestone 12:** `teardown` exposed in both interfaces (`easydrop teardown`, `teardown_app`) – DONE (`deploy.Teardown` routes to the configured driver; volumes are never deleted; live deploy→teardown→re-teardown smoke green).
+- [x] **Milestone 13:** secrets out of `easydrop.toml` – `${VAR}` interpolation in the string fields + optional `.easydrop.env`/`.env` next to the config – DONE (`internal/config/env.go`; resolves OD-03; the dotenv files are excluded from the shipped archive; NFR-02 covered by a dedicated no-leak test).
 
 > Locked decisions (see ARCHITECTURE.md §5): single binary `cmd/easydrop/main.go`;
 > TOML `github.com/pelletier/go-toml/v2`; CLI `cobra` (no `viper`);
@@ -60,11 +61,22 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
   - `app.health_check_path` = `"/"`
   - `app.host_port` = `app.port` (M10: omitted `host_port` keeps pre-M10 behavior)
   - Port validation: `app.port` and `app.host_port` in 1-65535, and `app.host_port` ≤ 65534 (the Blue-Green pair needs `host_port+1`)
+- [x] M13: resolve `${VAR}` references in the string fields before the required-field checks and before the defaults above (so a `${VAR:-~/.ssh/id_rsa}` default still gets its `~` expanded). Implementation and locked semantics: §9 OD-03.
 
-### 1.3. Parsing Test Suite (`internal/config/parser_test.go`)
+### 1.2A. Secret Resolution (`internal/config/env.go`, M13)
+- [x] Read the optional secret files next to the config, in increasing priority: `.env`, `.easydrop.env`. A missing file is not an error; both are git-ignored and excluded from the shipped archive (`internal/core/builder/archive.go`, `defaultExcludes`).
+- [x] Precedence: real process environment > `.easydrop.env` > `.env`. Sources are composed through a `lookupFunc` – **never** `os.Setenv`, so a secret cannot leak into the inherited environment of the child `docker build` / `docker push` processes.
+- [x] `${VAR}` = required (unset or empty → hard error naming field and variable, never the value), `${VAR:-default}` = default when unset/empty, `$$` = literal `$`, unterminated `${` and malformed names are errors. Defaults and dotenv values are literal: no nested expansion.
+- [x] Expansion whitelist (explicit list, not reflection): `app.name`, `app.health_check_path`, `server.host`, `server.user`, `server.ssh_key`, `server.password`, `build.registry`, `build.image`, `driver.compose_file`, `nginx.domain`, `nginx.email`. Numbers and booleans are never interpolated.
+- [x] Lenient dotenv parsing (`KEY=VALUE`, optional `export`, one layer of quote stripping, no escape interpretation): a `.env` shared with docker compose may contain syntax we do not model, and an unreadable line must not break a deploy. A misspelled key still fails loudly at the point of use, because `${MISSING}` is a hard error.
+
+### 1.3. Parsing Test Suite (`internal/config/parser_test.go`, `internal/config/env_test.go`, `internal/config/examples_test.go`)
 - [x] Test Case: Parsing a fully populated valid TOML template.
 - [x] Test Case: Asserting initialization failure when critical parameters are missing.
 - [x] Test Case: Fallback mapping verification for missing optional attributes.
+- [x] Test Case: `${VAR}` resolution – set / unset / empty / `:-default` / `$$` escape / unterminated / bad name, plus the `env > .easydrop.env > .env` precedence and the interaction with `~` expansion.
+- [x] Test Case (NFR-02): an error from a missing variable names the field and the variable but never echoes the value.
+- [x] Test Case: every file in `examples/` parses through the real parser, uses only known section/key names, and demonstrates the case it is registered for.
 
 ---
 
@@ -394,6 +406,37 @@ Shared for both drivers:
 - **Verified:** snap host (this dev box) – Compose deploy → status → logs →
   re-deploy (backup created) → rollback, all green with the non-hidden state
   path.
+
+### OD-03: How do credentials reach the SSH layer without living in git?
+- **Context:** `server.password` was the only way to authenticate without a key
+  file, and it lives in `easydrop.toml` – i.e. in git. The encrypted vault (D-06)
+  did not help: `manage_server` is reachable only from the MCP tool and nothing
+  in `internal/deploy` ever read it, so the stored credential was inert.
+  `.env` interpolation was the conventional answer (docker compose, systemd).
+- **Options:**
+  - **A:** wire the vault into deploy. The vault lives in `internal/mcp`, which
+    imports `internal/deploy` – this needs a package extraction to avoid an
+    import cycle, and it makes the CLI depend on `EASYDROP_VAULT_PASSWORD`
+    (non-interactive, fails closed). Biggest change, smallest reach: the vault
+    is still MCP-only, so a plain CLI user gains nothing.
+  - **B (chosen):** `${VAR}` interpolation in the config + optional
+    `.easydrop.env`/`.env`. Works identically for the CLI and for MCP (both go
+    through `ParseConfig`), needs no new dependency, and the secret file is
+    something every repo already knows how to git-ignore.
+  - **C:** document "use ssh-agent" only. Zero code, but leaves password auth
+    users with no in-repo answer.
+- **Decision (M13, option B):** see §1.2A for the locked semantics. The
+  whitelist is explicit so a new field is never interpolated by accident, and
+  errors name the field and the variable but never the value (NFR-02). Since
+  easydrop now reads those files itself, `.env` and `.easydrop.env` were added
+  to `defaultExcludes` in the archiver: a deploy must not ship the credential it
+  authenticates with. Projects that need `.env` inside the bundle (compose
+  variable substitution) re-include it via `!.env` in `.dockerignore` – a
+  behavior change worth calling out in release notes.
+- **Status:** RESOLVED in M13. Option A is not dead, just separate: it would
+  only matter if the vault ever becomes a deploy-time credential source.
+- **Verified:** unit tests for every documented case plus a manual check that an
+  unset variable aborts the command before any SSH connection is attempted.
 
 ---
 
