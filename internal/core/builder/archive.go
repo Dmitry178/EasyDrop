@@ -16,11 +16,20 @@ import (
 // excluded from the archive itself (even without a .dockerignore).
 const archiveFileName = "project.tar.gz"
 
-// defaultExcludes always applies on top of .dockerignore rules.
+// defaultExcludes always applies on top of .dockerignore rules, which can
+// still re-include any of them with a "!" negation.
+//
+// The two dotenv files are excluded because easydrop itself reads them for
+// ${VAR} interpolation (see internal/config/env.go) – a deploy must not carry
+// the credentials it authenticates with to the target host. A project that
+// really needs its .env inside the bundle (docker compose variable
+// substitution) re-includes it with a ".env" line negated in .dockerignore.
 var defaultExcludes = []string{
 	".git",
 	"node_modules",
 	archiveFileName,
+	".env",
+	".easydrop.env",
 }
 
 // ignorePattern is one compiled .dockerignore / default line.
@@ -125,8 +134,9 @@ func (r *ignoreRules) excluded(rel string) bool {
 }
 
 // CreateProjectArchive compresses srcDir into a tar.gz stream: it honors
-// .dockerignore (with `!` re-inclusion), always drops .git, node_modules and
-// project.tar.gz itself, and packs regular files only (symlinks, sockets and
+// .dockerignore (with `!` re-inclusion), always drops .git, node_modules,
+// project.tar.gz itself and the .env / .easydrop.env files easydrop reads
+// secrets from, and packs regular files only (symlinks, sockets and
 // other specials are skipped). File modes are preserved.
 func CreateProjectArchive(srcDir string, w io.Writer) error {
 	info, err := os.Stat(srcDir)
