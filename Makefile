@@ -19,6 +19,13 @@ COVER_FILE  := $(BIN_DIR)/coverage.out
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS     := -s -w -X easydrop/internal/version.Version=$(VERSION)
 
+# PREFIX follows the usual GNU layout, so the binary lands in $(PREFIX)/bin.
+# The default is a per-user prefix: `make install` needs no sudo and normally
+# targets a directory that is already on PATH. For a system-wide install use
+#   sudo make install PREFIX=/usr/local
+PREFIX      ?= $(HOME)/.local
+BINDIR      := $(PREFIX)/bin
+
 GO          ?= go
 GOFILES     := $(shell find . -name '*.go' -not -path './$(BIN_DIR)/*')
 
@@ -46,8 +53,20 @@ build: ## Compile the single binary into bin/
 	@echo "built $(BIN_DIR)/$(BINARY) ($(VERSION))"
 
 .PHONY: install
-install: ## Install the binary into GOBIN (go install)
-	$(GO) install -trimpath -ldflags '$(LDFLAGS)' $(CMD)
+install: build ## Install the binary into $(PREFIX)/bin (default: ~/.local/bin, no sudo)
+	@mkdir -p $(BINDIR)
+	install -m 0755 $(BIN_DIR)/$(BINARY) $(BINDIR)/$(BINARY)
+	@echo "installed $(BINDIR)/$(BINARY) ($(VERSION))"
+	@case ":$$PATH:" in \
+		*":$(BINDIR):"*) echo "on PATH: $(BINDIR)/$(BINARY)" ;; \
+		*) echo ""; \
+		   echo "WARNING: $(BINDIR) is not on your PATH, so '$(BINARY)' will not resolve."; \
+		   echo "         add it once:  echo 'export PATH=\"\$$PATH:$(BINDIR)\"' >> ~/.bashrc && source ~/.bashrc" ;; \
+	esac
+
+.PHONY: uninstall
+uninstall: ## Remove the installed binary from $(PREFIX)/bin
+	@rm -f $(BINDIR)/$(BINARY) && echo "removed $(BINDIR)/$(BINARY)"
 
 .PHONY: run
 run: build ## Build, then run the CLI (pass ARGS="status -n 20")
