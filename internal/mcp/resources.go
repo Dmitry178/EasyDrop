@@ -38,6 +38,19 @@ const troubleshootingDoc = `# EasyDrop troubleshooting runbook
 ## SSH failures
 - Check server.host/user/port, key path (~ expansion supported), or password.
 - 'localhost'/'127.0.0.1' bypass SSH entirely (LocalExecutor).
+
+## Snap-confined docker (Ubuntu 'snap install docker')
+A snap dockerd has a private mount namespace – three separate limits:
+1. No host /tmp: "unable to prepare context: path ... not found".
+2. No hidden (dot-) files/dirs in $HOME: "permission denied" on ~/.easydrop/...
+   for compose/swarm state, or "failed to read dockerfile" when the build
+   context lives under a dot-dir.
+3. $HOME inside daemon-spawned commands is snap's void path
+   (/var/lib/snapd/void), so never embed '$HOME/...' in a composed command.
+Fix: set EASYDROP_STAGING_BASE to a NON-hidden directory under $HOME
+(e.g. ~/easydrop-staging). EasyDrop detects snap and fails fast with this
+hint; compose/swarm state automatically moves to ~/easydrop/apps.
+Hosts bootstrapped by easydrop use apt docker and never hit these limits.
 `
 
 func addResources(s *sdk.Server) {
@@ -55,7 +68,7 @@ func addResources(s *sdk.Server) {
 		})
 	s.AddResource(
 		&sdk.Resource{URI: "easydrop://docs/troubleshooting", Name: "troubleshooting",
-			Description: "Self-healing runbook: ports, probes, proxy, snap-docker, sudo, rollback, SSH",
+			Description: "Self-healing runbook: ports, probes, proxy, snap-docker limits, sudo, rollback, SSH",
 			MIMEType:    "text/markdown"},
 		func(_ context.Context, _ *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
 			return &sdk.ReadResourceResult{Contents: []*sdk.ResourceContents{
