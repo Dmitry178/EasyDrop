@@ -92,5 +92,5 @@ type CommandExecutor interface {
 | # | Question | Why it matters | Proposal |
 |---|----------|----------------|----------|
 | OD-01 | Split container-internal vs host-published ports? | Single `app.port` forces the image to listen on the host port; fixed-port images (nginx:80) can't move | RESOLVED (M10): `app.port` = in-container port, optional `app.host_port` (default = `port`) = published host port; Blue-Green pair = `{host_port, host_port+1}` |
-| OD-02 | How to handle snap-confined dockerd (blind to host `/tmp` **and** to hidden files in `$HOME`)? | Remote builds and compose/swarm state reads fail cryptically on snap-docker hosts; managed (apt-docker) hosts unaffected | RESOLVED (M9): fail-fast `IsSnapConfinedDaemon` probe with `EASYDROP_STAGING_BASE` hint + non-hidden `$HOME/easydrop` state dir on snap hosts |
+| OD-02 | How to handle snap-confined dockerd? | Private mount namespace: no host `/tmp`, no dot-files in `$HOME`, synthetic `$HOME` in daemon-spawned commands → builds and compose/swarm state fail cryptically | RESOLVED (M9/M12): `IsSnapConfinedDaemon` fail-fast + `EASYDROP_STAGING_BASE` (non-hidden) hint, non-hidden `~/easydrop` state dir, `resolveHome` – see `docs/implementation.md §10` |
 ```
