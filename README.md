@@ -6,9 +6,6 @@
 
 It delivers a PaaS-like experience (similar to Railway or Fly.io) on your own infrastructure by combining an orchestrator, a reverse proxy (Nginx), and automated SSL certificate management (Certbot) into a single binary.
 
-**Project Status: Under Active Development**
-> **Note:** EasyDrop is currently an experimental project in its early development phase. Features described below are being actively implemented, and breaking changes may occur frequently. Not production-ready yet!
-
 ---
 
 ## Key Features
@@ -109,7 +106,7 @@ make smoke      # end-to-end deploy of a throwaway app on the local docker daemo
 
 Override the stamped version explicitly for releases: `make build VERSION=1.2.3`.
 
-> **Snap-docker hosts:** a snap-confined daemon cannot see host `/tmp` or dot-directories in `$HOME`. EasyDrop detects this and tells you to set `EASYDROP_STAGING_BASE` to a non-hidden path (e.g. `~/easydrop-staging`); `make smoke` does this automatically.
+> **Snap-docker hosts:** a snap-confined daemon has its own mount namespace – it cannot see host `/tmp`, cannot read hidden (`dot-`) files in `$HOME`, and resolves `$HOME` to a snap path inside its own commands. EasyDrop detects this, fails fast with an actionable message, and automatically keeps Compose/Swarm state in a non-hidden `~/easydrop` directory. To build, set `EASYDROP_STAGING_BASE` to a **non-hidden** path under `$HOME` (e.g. `~/easydrop-staging`); `make smoke` does this automatically. Hosts bootstrapped by easydrop use apt Docker and never hit these limits. Full reference: [`docs/implementation.md §10`](docs/implementation.md).
 
 ## License
 
