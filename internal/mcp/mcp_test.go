@@ -127,7 +127,7 @@ func TestStoreMigratesLegacyTOML(t *testing.T) {
 }
 
 func TestServerRegistersWithoutPanic(t *testing.T) {
-	// AddTool panics on bad schemas — construction alone validates them.
+	// AddTool panics on bad schemas – construction alone validates them.
 	s := NewServer()
 	if s == nil {
 		t.Fatalf("NewServer() = nil")
@@ -192,5 +192,13 @@ func TestHandleRollbackWithoutConfig(t *testing.T) {
 	res, _, _ := handleRollback(context.Background(), &sdk.CallToolRequest{}, rollbackInput{AppName: "my-api"})
 	if res == nil || !res.IsError {
 		t.Errorf("rollback without config must yield IsError result (no docker touched)")
+	}
+}
+
+func TestHandleTeardownValidation(t *testing.T) {
+	t.Chdir(t.TempDir())
+	res, _, _ := handleTeardown(context.Background(), &sdk.CallToolRequest{}, teardownInput{})
+	if res == nil || !res.IsError {
+		t.Errorf("empty app_name must yield IsError result")
 	}
 }
