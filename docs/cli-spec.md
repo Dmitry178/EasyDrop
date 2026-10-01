@@ -8,6 +8,12 @@ Single binary `cmd/easydrop/main.go` (see ARCHITECTURE.md §5).
 ### 1.0. Global flags
 - `-c, --config string`: path to `easydrop.toml` (defaults to `./easydrop.toml`). Applies to `deploy`, `status`, `logs`, `rollback`, `teardown` (and `mcp-server` ignores it – MCP receives `config_path` per call).
 
+### 1.0.1. Credentials in the config (M13)
+- **Secret files:** `easydrop` reads the optional `.env` and `.easydrop.env` located in the **same directory as the config file** (`.easydrop.env` wins if both exist). A missing file is not an error. Both are git-ignored and are excluded from the archive shipped to the target host; a project that needs `.env` in the bundle re-includes it with `!.env` in `.dockerignore`.
+- **Precedence:** real process environment > `.easydrop.env` > `.env` (CI can therefore inject a value with no file at all).
+- **Syntax:** `${VAR}` (required – unset or empty is an error naming the field, before any SSH connection), `${VAR:-default}`, `$$` for a literal dollar sign. Applies to the string fields only: `app.name`, `app.health_check_path`, `server.host`, `server.user`, `server.ssh_key`, `server.password`, `build.registry`, `build.image`, `driver.compose_file`, `nginx.domain`, `nginx.email`. Numbers and booleans are never interpolated.
+- **Never** echo a resolved value in errors, output or logs (NFR-02).
+
 ### 1.1. `easydrop init`
 Initializes a new project workspace in the current working directory.
 - **Behavior:** Scans the active directory for existing deployment and application assets (such as a `Dockerfile`, `docker-compose.yml`, `package.json`, or `go.mod`). Generates an optimized, pre-filled `easydrop.toml` template.
