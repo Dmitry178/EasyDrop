@@ -1,0 +1,16 @@
+# 01 – Minimal
+# The smallest config EasyDrop accepts: only the two required fields plus the
+# container port. Everything else falls back to a default:
+#
+#   app.host_port = app.port, app.health_check_path = "/"
+#   server.port = 22, server.ssh_key = "~/.ssh/id_rsa"
+#   build.strategy = "remote", driver.type = "single", nginx.ssl = false
+#
+# Use it to check "does my host answer at all" before adding complexity.
+
+[app]
+name = "minimal-app"
+port = 8080
+
+[server]
+host = "localhost"
