@@ -21,6 +21,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 9:** Compose/Swarm drivers, encrypted server vault, snap-docker fail-fast (OD-02), generated JSON-Schema resource – DONE.
 - [x] **Milestone 10:** Port split `app.port` / `app.host_port` (resolves OD-01) – DONE (config defaults + validation, SingleDriver pair, schema meta, live smoke on a fixed-port image).
 - [x] **Milestone 11:** `LocalBuilder` – registry strategy `build.strategy = "local"` (resolves OD-00, FR-04) – DONE (`builder/local.go`, deploy wiring, live smoke against a real `registry:2`).
+- [x] **Milestone 12:** `teardown` exposed in both interfaces (`easydrop teardown`, `teardown_app`) – DONE (`deploy.Teardown` routes to the configured driver; volumes are never deleted; live deploy→teardown→re-teardown smoke green).
 
 > Locked decisions (see ARCHITECTURE.md §5): single binary `cmd/easydrop/main.go`;
 > TOML `github.com/pelletier/go-toml/v2`; CLI `cobra` (no `viper`);
@@ -162,7 +163,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] Declare pipeline signature: `Build(ctx context.Context, app *models.Application) error`. The effective no-cache flag is `app.Config.Build.NoCache` (which `deploy --no-cache` overrides to `true` before calling).
 - [x] Validate `app.name` up front against `^[a-z0-9]+(?:[._-][a-z0-9]+)*$` (docker-compatible lowercase) – fails fast with zero host commands instead of a cryptic `docker build -t` rejection.
 - [x] Run local workspace compression workflows (into a `os.CreateTemp` bundle, always removed via defer).
-- [x] Ship the compiled `project.tar.gz` bundle into isolated workspace storage on the host (`[stagingBase]/builds/[appName]/`, default base `/tmp/easydrop`) via `UploadFile` (parent dirs auto-created by both executors). Escape hatch (locked): env `EASYDROP_STAGING_BASE` overrides the base for hosts where `/tmp` is unsuitable (tiny tmpfs, noexec, snap-confined daemons blind to host `/tmp` – see OD-02 in §9).
+- [x] Ship the compiled `project.tar.gz` bundle into isolated workspace storage on the host (`[stagingBase]/builds/[appName]/`, default base `/tmp/easydrop`) via `UploadFile` (parent dirs auto-created by both executors). Escape hatch (locked): env `EASYDROP_STAGING_BASE` overrides the base for hosts where `/tmp` is unsuitable (tiny tmpfs, noexec, snap-confined daemons – see §10 and OD-02 in §9).
 - [x] Trigger remote file unpack sequences via `ExecCommand` (paths quoted via `core.EscapeShellArg`):
   ```bash
   tar -xzf /tmp/easydrop/builds/[appName]/project.tar.gz -C /tmp/easydrop/builds/[appName]/
@@ -318,7 +319,7 @@ Shared for both drivers:
 
 - [x] Single binary entry point `cmd/easydrop/main.go` (locked – no `cmd/cli` + `cmd/mcp-server` split; NFR-03). Command tree lives in `internal/cli/` (`root.go` + one file per command); `main.go` only calls `cli.Execute()`.
 - [x] CLI framework `github.com/spf13/cobra` WITHOUT `viper` (locked – single `easydrop.toml`, cobra flags suffice).
-- [x] Commands from `docs/cli-spec.md`: `init [--force]` (via `config.Scaffold`+`WriteConfig`), `deploy [-c/--config] [--no-cache] [--blue-green] [--skip-bootstrap]`, `status`, `logs [app_name] [-f/--follow] [-n/--tail]`, `rollback [app_name]`. `mcp-server` lands in Milestone 8.
+- [x] Commands from `docs/cli-spec.md`: `init [--force]` (via `config.Scaffold`+`WriteConfig`), `deploy [-c/--config] [--no-cache] [--blue-green] [--skip-bootstrap]`, `status`, `logs [app_name] [-f/--follow] [-n/--tail]`, `rollback [app_name]`, `teardown [app_name]` (M12). `mcp-server` lands in Milestone 8.
 - [x] `deploy` pipeline (`runDeploy`): parse → overlay `--no-cache`/`--blue-green` (`applyDeployFlags`, never unsets config-true) → gate `driver.type == single` → signal-aware ctx → `NewExecutor` → Bootstrap (skipped with `--skip-bootstrap`) → `Build` with `SrcDir` = config file's directory → `SingleDriver` (`BlueGreen` from config, `Ingress` wired when domain non-empty) → `Deploy` → Certbot when `nginx.ssl && domain != ""` (manager no-ops on localhost).
 - [x] `init` scaffolding (`config.Scaffold`, FR-02): EXPOSE port from Dockerfile (default 8080), compose driver on compose files, app name = sanitized dir base, server = localhost + current user. `WriteConfig` refuses overwrite without `--force`; output round-trips through `ParseConfig` (tested).
 - [x] Cross-field note (locked): `Bootstrapper.ensureDockerGroup` checks `id -nG` membership first and skips `usermod` when already in the docker group (idempotent, avoids pointless sudo).
@@ -327,7 +328,7 @@ Shared for both drivers:
 
 - [x] Serve stdio JSON-RPC via `easydrop mcp-server` using the official `modelcontextprotocol/go-sdk` v1.8.0 (locked). `internal/mcp/server.go`: `NewServer()` + `Run(ctx)` over `mcp.StdioTransport{}`; `internal/cli/mcpserver.go` wires the cobra subcommand with signal-aware ctx. Single `internal/version.Version` (`0.1.0`, ldflags-overridable) feeds both `--version` and MCP `serverInfo`.
 - [x] One core, two interfaces (locked): the deploy pipeline lives in `internal/deploy/` (`Options`, `Run`, `LoadConfig`, `ResolveAppName`, `ApplyFlags`, `Status`, `Logs` with collection cap, `Rollback`, `Init`); `internal/cli` commands are thin wrappers, MCP handlers call the same functions. No CLI↔MCP imports.
-- [x] Tools map 1:1 to `docs/mcp-spec.md`: `init_project`, `deploy_app`, `get_status`, `get_logs`, `rollback_app`, `manage_server`; resources `easydrop://docs/schema` (**generated** by reflection over `models.Config` – `schemaMeta` supplies descriptions/defaults/enums, missing entry = error, so schema can never drift from the parser) and `easydrop://docs/troubleshooting` (static runbook). Typed I/O with `jsonschema` tags; app failures return `isError` tool results (not protocol errors); `follow` log collection capped at 2000 lines.
+- [x] Tools map 1:1 to `docs/mcp-spec.md`: `init_project`, `deploy_app`, `get_status`, `get_logs`, `rollback_app`, `teardown_app` (M12), `manage_server`; resources `easydrop://docs/schema` (**generated** by reflection over `models.Config` – `schemaMeta` supplies descriptions/defaults/enums, missing entry = error, so schema can never drift from the parser) and `easydrop://docs/troubleshooting` (static runbook). Typed I/O with `jsonschema` tags; app failures return `isError` tool results (not protocol errors); `follow` log collection capped at 2000 lines.
 - [x] `manage_server` persistence: **encrypted** vault `~/.easydrop/servers.vault` – AES-256-GCM, scrypt `(N=32768, r=8, p=1)`, dir `0700`, file `0600`, upsert by host+user. Key material comes only from `EASYDROP_VAULT_PASSWORD` (no prompt – MCP is non-interactive; fail closed). Legacy plaintext `servers.toml` is imported once and renamed `servers.toml.migrated`. `EASYDROP_SERVERS_FILE` overrides the path. Secrets never echoed in messages or logs (tested).
 - [x] Verified: unit tests (store round-trip/perms/validation, handler arg validation, schema registration) + in-process e2e with a real SDK client (`e2e_test.go`: tools/list, init→EXPOSE detect, manage add + secret-leak check, resources, status-without-config isError) + live stdio smoke against the built binary (initialize, tools/list, init_project, manage_server, get_status error path, resources/list+read).
 
@@ -393,3 +394,42 @@ Shared for both drivers:
 - **Verified:** snap host (this dev box) – Compose deploy → status → logs →
   re-deploy (backup created) → rollback, all green with the non-hidden state
   path.
+
+---
+
+## §10. Snap-confined Docker – known limitations & handling
+
+Found empirically on the dev box (Ubuntu 24.04 + `snap` Docker 29.8.0, `DockerRootDir=/var/snap/docker/common/var-lib-docker`). A snap-confined `dockerd` runs in its own mount namespace, so paths the host process sees are **not** necessarily visible to the daemon. Three distinct limits bit us; all are now handled explicitly.
+
+### 10.1 The three sandbox limits
+
+| # | Limit | Symptom (raw daemon error) | Where it bites |
+|---|-------|----------------------------|----------------|
+| 1 | Private `/tmp` | `docker build` → `unable to prepare context: path "/tmp/easydrop/builds/<app>" not found` | Remote staging + build (§4.2) |
+| 2 | No access to hidden (`dot-`) files/dirs in `$HOME` | `compose` → `open /home/<u>/.easydrop/apps/<app>/compose.yml: permission denied`; also `failed to read dockerfile` when the build context is under a dot-dir | Compose/Swarm state dir (§5A), local build context (§4.3) |
+| 3 | Shell expansion is not the daemon's business | `docker compose -f '$HOME/...'` → `"/var/lib/snapd/void/$HOME/..."` (snap runs commands with a synthetic `HOME`; single quotes also block shell expansion) | Any path built from `$HOME` inside a composed command (§5A) |
+
+Limit 3 is the subtle one: it is *not* a permission problem, it is two different expansion contexts – the shell's `$HOME` (where the file really is) vs the daemon's `HOME` (a snapd void path) – so the fix is to resolve `$HOME` once via `printf %s "$HOME"` and pass an absolute path.
+
+### 10.2 How EasyDrop handles it
+
+- **Detection** (single probe, shared): `builder.IsSnapConfinedDaemon` runs `docker info --format '{{.DockerRootDir}}|{{.OperatingSystem}}'` and flags `/var/snap/docker` or `Ubuntu Core`. Unparsable output → treated as non-snap (the next docker call fails loudly on its own).
+- **Staging** (§4.2/§4.3): when snap + `/tmp`-based staging, both builders abort early with an actionable hint instead of the opaque `path … not found` / `failed to read dockerfile`.
+- **State dir** (§5A): `$HOME/easydrop/apps/<app>` (no leading dot) on snap hosts, `$HOME/.easydrop/apps/<app>` elsewhere – `stateDir()`.
+- **Home resolution** (§5A): `resolveHome` executes `printf %s "$HOME"` once per driver instance and rejects snap's `/var/lib/snapd/void` result, instead of embedding `'$HOME/...'` in commands.
+- **Escape hatch**: `EASYDROP_STAGING_BASE` picks any daemon-visible directory. On snap hosts it must be **non-hidden** (limit 2).
+
+### 10.3 Operator guidance
+
+```bash
+# on a snap-docker host, before any easydrop command that ships a workspace:
+export EASYDROP_STAGING_BASE=~/easydrop-staging   # non-hidden, daemon-visible
+```
+
+`make smoke` performs this detection and re-pointing automatically.
+
+### 10.4 Scope & non-goals
+
+- Hosts prepared by our own `Bootstrapper` install Docker via `get.docker.com` (apt) and are therefore **never** affected – snap only matters when EasyDrop targets a pre-existing snap-docker host (dev boxes, some managed images).
+- Installing Docker from snap instead of apt, or relaxing the snap confinement, is explicitly out of scope: the mitigation above keeps EasyDrop working without changing the host's packaging.
+- Verified end-to-end on a snap host: remote build + Compose deploy → status → logs → re-deploy → rollback → teardown, and `build.strategy = "local"` against a real `registry:2`.
