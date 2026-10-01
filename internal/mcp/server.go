@@ -20,6 +20,7 @@ func NewServer() *sdk.Server {
 	sdk.AddTool(s, &sdk.Tool{Name: "get_status", Description: "Show the deployed app status"}, handleStatus)
 	sdk.AddTool(s, &sdk.Tool{Name: "get_logs", Description: "Read container logs (snapshot or follow)"}, handleLogs)
 	sdk.AddTool(s, &sdk.Tool{Name: "rollback_app", Description: "Restore the backup kept by the last Blue-Green deploy"}, handleRollback)
+	sdk.AddTool(s, &sdk.Tool{Name: "teardown_app", Description: "Remove the deployment (containers, backups, compose/swarm stack state); volumes are kept"}, handleTeardown)
 	sdk.AddTool(s, &sdk.Tool{Name: "manage_server", Description: "Add or remove a target host record in the local server store"}, handleManageServer)
 
 	addResources(s)
