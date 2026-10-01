@@ -93,6 +93,24 @@ EasyDrop поддерживает **Model Context Protocol (MCP)**. Вы мож�
 
 ---
 
+## Разработка
+
+Требуется Go >= 1.27 (см. `go.mod`; `GOTOOLCHAIN=auto` подберёт версию сам).
+
+```bash
+make            # показать все цели
+make build      # собрать bin/easydrop (версия из git describe)
+make verify     # CI-гейт: проверка gofmt + go vet + тесты
+make test-race  # тесты с детектором гонок
+make cover      # отчёт о покрытии -> bin/coverage.out
+make release    # кросс-компиляция linux/darwin/windows × amd64/arm64 + SHA256SUMS
+make smoke      # сквозной деплой одноразового приложения на локальном docker
+```
+
+Для релизов версию можно задать явно: `make build VERSION=1.2.3`.
+
+> **Хосты со snap-docker:** snap-демон не видит `/tmp` и скрытые директории в `$HOME`. EasyDrop это определяет и подсказывает выставить `EASYDROP_STAGING_BASE` на неприватный путь (например `~/easydrop-staging`); `make smoke` делает это автоматически.
+
 ## Лицензия
 
 Проект распространяется под лицензией MIT. Подробнее см. в файле [LICENSE](LICENSE.md).

@@ -93,6 +93,24 @@ The core codebase documentation is decoupled by operational boundaries:
 
 ---
 
+## Development
+
+Requires Go >= 1.27 (see `go.mod`; `GOTOOLCHAIN=auto` resolves it).
+
+```bash
+make            # list all targets
+make build      # compile bin/easydrop (version stamped from git describe)
+make verify     # CI gate: gofmt check + go vet + tests
+make test-race  # tests under the race detector
+make cover      # coverage report -> bin/coverage.out
+make release    # cross-compile linux/darwin/windows × amd64/arm64 + SHA256SUMS
+make smoke      # end-to-end deploy of a throwaway app on the local docker daemon
+```
+
+Override the stamped version explicitly for releases: `make build VERSION=1.2.3`.
+
+> **Snap-docker hosts:** a snap-confined daemon cannot see host `/tmp` or dot-directories in `$HOME`. EasyDrop detects this and tells you to set `EASYDROP_STAGING_BASE` to a non-hidden path (e.g. `~/easydrop-staging`); `make smoke` does this automatically.
+
 ## License
 
 Distributed under the MIT License. See [LICENSE](LICENSE.md) for more information.
