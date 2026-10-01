@@ -59,7 +59,7 @@ func snapConfinedOutput(infoOut string) bool {
 // IsSnapConfinedDaemon reports whether the target daemon runs inside a snap
 // sandbox. Such daemons see neither host /tmp nor hidden files in $HOME
 // (snapd's home interface), which affects staging paths and state dirs.
-// Unparsable `docker info` output reports false — the downstream docker call
+// Unparsable `docker info` output reports false – the downstream docker call
 // then fails loudly on its own.
 func IsSnapConfinedDaemon(ctx context.Context, ex core.CommandExecutor) bool {
 	out, _, _, err := ex.ExecCommand(ctx, "docker info --format '{{.DockerRootDir}}|{{.OperatingSystem}}'")
@@ -76,7 +76,7 @@ func checkDaemonStaging(ctx context.Context, ex core.CommandExecutor) error {
 		return nil
 	}
 	if strings.HasPrefix(core.StagingBase(), "/tmp/") {
-		return fmt.Errorf("snap-confined docker daemon cannot see host /tmp staging at %q: set EASYDROP_STAGING_BASE to a daemon-visible directory (e.g. under $HOME)",
+		return fmt.Errorf("snap-confined docker daemon cannot see host /tmp staging at %q: set EASYDROP_STAGING_BASE to a daemon-visible directory – a NON-hidden path under $HOME (e.g. ~/easydrop-staging), since snapd also hides dot-directories in $HOME",
 			core.StagingBase()+"/builds")
 	}
 	return nil
