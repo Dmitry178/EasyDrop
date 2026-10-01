@@ -1,2 +1,5 @@
 .idea
 _*
+bin
+.env
+.easydrop.env
