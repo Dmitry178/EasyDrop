@@ -6,7 +6,7 @@ import (
 
 func TestRootHasAllCommands(t *testing.T) {
 	root := rootCmd()
-	want := map[string]bool{"init": false, "deploy": false, "status": false, "logs": false, "rollback": false, "mcp-server": false}
+	want := map[string]bool{"init": false, "deploy": false, "status": false, "logs": false, "rollback": false, "teardown": false, "mcp-server": false}
 	for _, c := range root.Commands() {
 		if _, ok := want[c.Name()]; ok {
 			want[c.Name()] = true
