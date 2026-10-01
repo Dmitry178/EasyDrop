@@ -6,7 +6,7 @@ Single binary `cmd/easydrop/main.go` (see ARCHITECTURE.md §5).
 ## 1. Base Commands & Syntax
 
 ### 1.0. Global flags
-- `-c, --config string`: path to `easydrop.toml` (defaults to `./easydrop.toml`). Applies to `deploy`, `status`, `logs`, `rollback` (and `mcp-server` ignores it – MCP receives `config_path` per call).
+- `-c, --config string`: path to `easydrop.toml` (defaults to `./easydrop.toml`). Applies to `deploy`, `status`, `logs`, `rollback`, `teardown` (and `mcp-server` ignores it – MCP receives `config_path` per call).
 
 ### 1.1. `easydrop init`
 Initializes a new project workspace in the current working directory.
@@ -38,7 +38,12 @@ Streams operational container output channels directly into the terminal interfa
 Restores the stopped backup kept by the last Blue-Green deploy.
 - **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `Rollback(ctx, app)`: removes the failed active, renames `[app]-active-previous` back, starts it, repoints ingress, probes health. Fails fast with "no rollback backup" when no backup exists (direct-mode deploys, fresh hosts) – without touching anything.
 
-### 1.6. `easydrop mcp-server`
+### 1.6. `easydrop teardown [app_name]`
+Removes the deployment from the target host.
+- **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `Teardown` on the configured driver: removes containers (including the stopped Blue-Green backup `[app]-active-previous` and any leftover `-green`), and for Compose/Swarm also the stack (`compose down` / `docker stack rm`) plus its state directory. **Named volumes are never deleted** – data outlives the deploy. Idempotent: tearing down an app that is not deployed succeeds with a "not present, skipping" note.
+- **Flags:** `-c, --config string` (defaults to `./easydrop.toml`).
+
+### 1.7. `easydrop mcp-server`
 Starts the MCP server in stdio JSON-RPC mode (same binary, see `docs/mcp-spec.md`).
 - **Behavior:** Switches `cmd/easydrop` into server mode speaking MCP over stdio using the official `modelcontextprotocol/go-sdk`. AI clients configure `command: easydrop, args: ["mcp-server"]` (transport `stdio`).
 - **Flags:** none.
