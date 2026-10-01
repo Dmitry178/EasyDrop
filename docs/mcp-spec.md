@@ -1,6 +1,6 @@
 # Model Context Protocol (MCP) Server Specification
 
-Transport: stdio via the same binary – `easydrop mcp-server` (see `docs/cli-spec.md §1.6`).
+Transport: stdio via the same binary – `easydrop mcp-server` (see `docs/cli-spec.md §1.7`).
 SDK: official `modelcontextprotocol/go-sdk` (locked, see ARCHITECTURE.md §5).
 Single binary, no separate `easydrop-mcp` executable.
 
@@ -38,7 +38,13 @@ AI assistants invoke these structured primitives to safely manage infrastructure
   - `app_name` (string, required): Targeted application name identifier.
   - `config_path` (string, optional): Deployment blueprint for ports/healthcheck/ingress settings. Defaults to `./easydrop.toml`.
 
-### 1.6. `manage_server`
+### 1.6. `teardown_app`
+- **Description:** Removes the deployment from the target host (mirrors CLI `teardown`). Backed by `Teardown` on the configured driver: containers (including the Blue-Green backup and leftover `-green`), plus the compose/swarm stack and its state dir. **Named volumes are never deleted.** Idempotent – tearing down an app that is not deployed is not an error.
+- **Arguments:**
+  - `app_name` (string, required): Targeted application name identifier.
+  - `config_path` (string, optional): Deployment blueprint (selects the driver and target host). Defaults to `./easydrop.toml`.
+
+### 1.7. `manage_server`
 - **Description:** Mutates host records in EasyDrop's local server store to safely bind, evaluate, or deprecate environment access configurations.
 - **Persistence (locked):** encrypted vault at `~/.easydrop/servers.vault` – AES-256-GCM with a scrypt-derived key (`N=32768, r=8, p=1`), dir `0700`, file `0600`. The key comes **only** from `EASYDROP_VAULT_PASSWORD`; MCP is non-interactive, so there is no prompt and no fallback – the tool fails closed. A legacy plaintext `servers.toml` is imported once and renamed `servers.toml.migrated`. `EASYDROP_SERVERS_FILE` overrides the path. Never log or echo secrets (NFR-02).
 - **Arguments:**
@@ -58,4 +64,5 @@ The protocol maps contextual state metrics allowing connected LLM instances to a
 | `get_status` | `SingleDriver.Status(ctx, appName)` |
 | `get_logs` | `SingleDriver.Logs(ctx, appName, lines, follow)` |
 | `rollback_app` | `SingleDriver.Rollback(ctx, app)` |
-| `manage_server` | local server store (`0600` file; encrypted vault deferred) |
+| `teardown_app` | `Teardown(ctx, appName)` on the configured driver |
+| `manage_server` | encrypted vault (`~/.easydrop/servers.vault`, scrypt + AES-256-GCM) |
