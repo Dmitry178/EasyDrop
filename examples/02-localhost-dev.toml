@@ -1,0 +1,39 @@
+# 02 – Local development on this machine
+# Deploys to the local Docker daemon (no SSH, no ingress). This is the config
+# `make smoke` exercises.
+#
+# Note the port split: the app listens on 3000 INSIDE the container, while the
+# daemon publishes it on 8080 on the host. Blue-Green additionally needs
+# host_port + 1 (8081), so keep a free neighbour port.
+#
+# On a machine where the app needs a moment to boot, point the healthcheck at a
+# real endpoint instead of "/".
+#
+# Try: easydrop deploy -c examples/02-localhost-dev.toml --skip-bootstrap
+
+[app]
+name = "demo-web"
+port = 3000
+host_port = 8080
+health_check_path = "/healthz"
+
+[server]
+# "localhost" or "127.0.0.1" selects the local executor – no SSH at all,
+# server.user / server.ssh_key are ignored.
+host = "localhost"
+
+[build]
+# "remote" ships the workspace to the host and builds it there. On localhost
+# that means "build here", which is what you want while iterating.
+strategy = "remote"
+
+[driver]
+# "single" runs one container. Plain deploys update it in place (brief
+# downtime); set blue_green = true for zero-downtime swaps.
+type = "single"
+blue_green = false
+
+[nginx]
+# Empty domain = no reverse proxy. Reach the app on http://localhost:8080.
+domain = ""
+ssl = false
