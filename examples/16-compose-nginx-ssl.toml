@@ -1,0 +1,39 @@
+# 16 – Compose stack behind Nginx with TLS
+# The realistic production shape for a multi-service app: Compose on the host,
+# Nginx terminating the public domain, Let's Encrypt for the certificate.
+#
+# The wiring, in deploy order:
+#   1. bootstrap the host (docker, compose, firewall)
+#   2. ship the workspace, `docker compose build`, `docker compose up`
+#   3. wait for the services to be running
+#   4. render /etc/nginx/sites-available/<domain> proxying to 127.0.0.1:<app.port>
+#      → `nginx -t` → reload (a failed `nginx -t` aborts before the reload, so
+#        the previous live config keeps serving)
+#   5. certbot issues the certificate for <domain>
+#
+# Because the proxy target is `app.port` (there is no host_port split for
+# compose/swarm), your compose file must publish that same port on the host:
+#   ports: ["8080:8080"]  ← 8080 must equal app.port below
+#
+# `easydrop status` reports TLS info for the managed domain.
+
+[app]
+name = "shop"
+port = 8080
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+ssh_key = "~/.ssh/id_ed25519"
+
+[build]
+strategy = "remote"
+
+[driver]
+type = "compose"
+compose_file = "docker-compose.yml"
+
+[nginx]
+domain = "shop.example.com"
+ssl = true
+email = "ops@example.com"
