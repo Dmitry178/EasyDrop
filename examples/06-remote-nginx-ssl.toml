@@ -1,0 +1,42 @@
+# 06 – Remote VPS with a public domain and Let's Encrypt TLS
+# The flagship setup: SSH in, build on the host, run one container, put Nginx in
+# front of it, and issue a real certificate.
+#
+# Prerequisites:
+#   * the domain's A/AAAA record already resolves to `server.host`
+#   * ports 80 and 443 are reachable from the internet (Let's Encrypt needs 80
+#     for the HTTP-01 challenge, even though traffic ends up on 443)
+#   * the SSH user can run `sudo` (Nginx config moves + certbot + reload)
+#
+# Order of operations on a deploy: bootstrap → build → container up + healthcheck
+# → `nginx -t` → reload → certbot issue. If `nginx -t` fails, the previous live
+# config keeps serving and the deploy aborts before the reload.
+#
+# Try: easydrop deploy -c examples/06-remote-nginx-ssl.toml
+
+[app]
+name = "my-awesome-api"
+port = 8080
+# Trailing slash: EasyDrop probes http://127.0.0.1:8080/<path> for a 200.
+health_check_path = "/"
+
+[server]
+host = "203.0.113.10"
+user = "root"
+ssh_key = "~/.ssh/id_rsa"
+port = 22
+
+[build]
+strategy = "remote"
+
+[driver]
+type = "single"
+blue_green = true
+
+[nginx]
+domain = "api.example.com"
+# false = plain HTTP reverse proxy only (see 10-nginx-plain-http.toml).
+ssl = true
+# ACME contact address. Empty registers without one – Let's Encrypt then has
+# no way to warn you before the certificate expires.
+email = "ops@example.com"
