@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"easydrop/internal/models"
@@ -75,13 +76,27 @@ func GenerateSchema() (string, error) {
 	return string(blob), nil
 }
 
+// requiredFields lists the config keys ParseConfig/ApplyDefaults actually
+// enforce, by dotted path. Requiredness must NOT be inferred from the `omitempty`
+// tag: that couples the published schema to a serialization detail.
+// `app.port` is the proof – it carries `omitempty` so that `init` can omit it
+// when no port could be detected (OD-04), yet a config without it is rejected,
+// because an invented default breaks the deploy later instead of now.
+var requiredFields = map[string]bool{
+	"app.name":    true,
+	"app.port":    true,
+	"server.host": true,
+}
+
+func isRequired(dotted string) bool { return requiredFields[dotted] }
+
 func structSchema(t reflect.Type, prefix string) (map[string]any, error) {
 	props := map[string]any{}
 	var required []string
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
 		tag := sf.Tag.Get("toml")
-		name, opts, _ := strings.Cut(tag, ",")
+		name, _, _ := strings.Cut(tag, ",")
 		if name == "" || name == "-" {
 			continue
 		}
@@ -90,10 +105,11 @@ func structSchema(t reflect.Type, prefix string) (map[string]any, error) {
 			return nil, err
 		}
 		props[name] = prop
-		if !strings.Contains(opts, "omitempty") {
+		if isRequired(prefix + "." + name) {
 			required = append(required, name)
 		}
 	}
+	sort.Strings(required)
 	obj := map[string]any{"type": "object", "properties": props}
 	if len(required) > 0 {
 		obj["required"] = required
