@@ -1,0 +1,39 @@
+# 07 – Blue-Green (zero-downtime deploys, rollback-able)
+# A normal `single` deploy stops the old container and starts the new one in
+# place: a few seconds of downtime. Blue-Green instead boots the new container
+# on the pair {host_port, host_port+1}, waits for its healthcheck, flips the
+# ingress, and keeps the old container stopped as `<app>-active-previous`.
+#
+# That backup is what `easydrop rollback` restores – the only way to get a
+# rollback target. A plain (non-Blue-Green) deploy creates none, and
+# `rollback` fails fast with "no rollback backup" without touching anything.
+#
+# Cost: the host port pair must be free, and the old container keeps consuming
+# disk (its writable layer) until you deploy again or run `teardown`.
+#
+# The same effect is available per-run without editing this file:
+#   easydrop deploy --blue-green
+# Flags only turn values ON, never off (see docs/cli-spec.md §1.2).
+
+[app]
+name = "my-awesome-api"
+port = 8080
+# Blue-Green needs host_port AND host_port+1 (here 8080 and 8081) to be free.
+host_port = 8080
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+ssh_key = "~/.ssh/id_ed25519"
+
+[build]
+strategy = "remote"
+
+[driver]
+type = "single"
+blue_green = true
+
+[nginx]
+domain = "api.example.com"
+ssl = true
+email = "ops@example.com"
