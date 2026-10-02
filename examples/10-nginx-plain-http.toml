@@ -1,0 +1,31 @@
+# 10 – Domain reverse proxy over plain HTTP
+# Sets up the Nginx vhost (proxying the domain to the host port) but skips
+# certificate issuance. Use it while pointing DNS around, for an internal
+# hostname, or when TLS is terminated by a load balancer in front of the host.
+#
+# A non-empty `nginx.domain` is what turns ingress ON at all: with an empty
+# domain EasyDrop deploys the container and never touches Nginx.
+
+[app]
+name = "my-awesome-api"
+port = 8080
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+ssh_key = "~/.ssh/id_ed25519"
+
+[build]
+strategy = "remote"
+
+[driver]
+type = "single"
+
+[nginx]
+# EasyDrop renders /etc/nginx/sites-available/<domain>, symlinks it into
+# sites-enabled, runs `nginx -t`, then reloads.
+domain = "staging.example.com"
+# No certbot here – plain http:// only.
+ssl = false
+# Ignored while ssl = false.
+email = ""
