@@ -23,6 +23,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 11:** `LocalBuilder` – registry strategy `build.strategy = "local"` (resolves OD-00, FR-04) – DONE (`builder/local.go`, deploy wiring, live smoke against a real `registry:2`).
 - [x] **Milestone 12:** `teardown` exposed in both interfaces (`easydrop teardown`, `teardown_app`) – DONE (`deploy.Teardown` routes to the configured driver; volumes are never deleted; live deploy→teardown→re-teardown smoke green).
 - [x] **Milestone 13:** secrets out of `easydrop.toml` – `${VAR}` interpolation in the string fields + optional `.easydrop.env`/`.env` next to the config – DONE (`internal/config/env.go`; resolves OD-03; the dotenv files are excluded from the shipped archive; NFR-02 covered by a dedicated no-leak test).
+- [x] **Milestone 14:** `init` scans the project the way the docs always promised (FR-02) – Dockerfile EXPOSE, compose `ports`/`expose`, `package.json` (scripts + framework), language manifests and a bounded source scan, with the detected source reported for every value and **no port invented when detection comes up empty** (OD-04) – DONE (`internal/config/detect.go`, `ScaffoldResult`; see §1.4 and OD-04; also fixes the `compose.yml` → `compose_file` mismatch).
 
 > Locked decisions (see ARCHITECTURE.md §5): single binary `cmd/easydrop/main.go`;
 > TOML `github.com/pelletier/go-toml/v2`; CLI `cobra` (no `viper`);
@@ -61,6 +62,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
   - `app.health_check_path` = `"/"`
   - `app.host_port` = `app.port` (M10: omitted `host_port` keeps pre-M10 behavior)
   - Port validation: `app.port` and `app.host_port` in 1-65535, and `app.host_port` ≤ 65534 (the Blue-Green pair needs `host_port+1`)
+  - A **missing** `app.port` (0) is rejected with its own message, not the range one (OD-04): `app.port` carries `omitempty` so `init` can omit it, and a config without it must stop the deploy rather than silently become 8080
 - [x] M13: resolve `${VAR}` references in the string fields before the required-field checks and before the defaults above (so a `${VAR:-~/.ssh/id_rsa}` default still gets its `~` expanded). Implementation and locked semantics: §9 OD-03.
 
 ### 1.2A. Secret Resolution (`internal/config/env.go`, M13)
@@ -77,6 +79,25 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] Test Case: `${VAR}` resolution – set / unset / empty / `:-default` / `$$` escape / unterminated / bad name, plus the `env > .easydrop.env > .env` precedence and the interaction with `~` expansion.
 - [x] Test Case (NFR-02): an error from a missing variable names the field and the variable but never echoes the value.
 - [x] Test Case: every file in `examples/` parses through the real parser, uses only known section/key names, and demonstrates the case it is registered for.
+- [x] Test Case (M14, `detect_test.go`): one fixture per detection source (EXPOSE, last-stage EXPOSE, compose short/long/protocol/ephemeral forms, preferred-service choice, `package.json` script and framework, source scan per pattern), the precedence rules, the skip lists (`node_modules`/`vendor` must not contribute), the non-port numbers that must not match, all four compose file spellings, stack detection, app-name fallback for generic directories, and garbage input degrading to the default.
+
+### 1.4. `init` Detection Engine (`internal/config/detect.go`, M14)
+`Scaffold` returns a `ScaffoldResult` (the `*models.Config` plus the source of each detected value) so `init` can explain itself. Detection is **local and side-effect free**: it reads files under the project directory and never opens an SSH connection, a Docker socket or a network.
+
+- [x] **Port precedence, in three evidence tiers (M14).** Not one flat list – the tiers exist because the sources are not equally trustworthy, and the driver also changes what the right answer *is*:
+  - **Tier 1, the image (ground truth).** A Dockerfile or compose file describes the container that will actually run, so it outranks every piece of framework knowledge.
+    - `driver.type == "compose"` → the compose mapping outranks `EXPOSE`, because `ports: ["8080:80"]` means host `8080` and that is what ingress needs.
+    - last `EXPOSE` (the final stage becomes the image) → **final stage is a plain web server** (`nginx`/`httpd`/`apache`/`caddy` without `EXPOSE` ⇒ 80; a Vite/React/Vue static build ships in a `nginx:alpine` stage far more often than in a Node runtime, where the framework's dev port would be wrong) → **a port in `CMD`/`ENTRYPOINT`/`ENV`** (`--port 4000`, `PORT=8080`): `CMD ["next","start","-p","4000"]` pins 4000 and no `next`→3000 knowledge overrides it.
+  - **Tier 2, a literal in the project (a fact).** An explicit `--port N`/`-p N` in an npm script, then the bounded source scan. It sits *above* the conventions: a port written in the app's own code is a fact, a framework default is a guess.
+  - **Tier 3, conventions (weakest).** The `package.json` framework table, then the Python dependency table (servers first: a container runs `uvicorn`/`gunicorn`, so a `flask`+`gunicorn` project resolves to 8000, not Flask's 5000 dev default).
+  - **Nothing detected → no value at all.** No `8080` fallback: `app.port` is left unset (OD-04) and the deploy refuses the config with an actionable message.
+- [x] **Compose file** (`findComposeFile`): the first of `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`, `compose.yaml`. Fixes a latent M7 bug: a project with `compose.yml` was detected as `compose` but still got `compose_file = "docker-compose.yml"`, i.e. the driver ran a file that does not exist. Parsed with `gopkg.in/yaml.v3` (only `services.<name>.ports` / `.expose` are modeled); `ports` accepts the short (`8080:80`, `127.0.0.1:8080:80`, `8080/udp`) and long (`target`/`published`) forms, and returns the **host** side; service choice prefers `web, app, api, frontend, server, …` then alphabetical, so the result is deterministic. `expose:` / `target` is the fallback.
+- [x] **`package.json`**: an explicit port in a `scripts` entry wins (`next dev -p 3000`, `vite --port=5173`, `PORT=…`; `tsc -p tsconfig.json` cannot match), then a `vite preview` in the `start` script (4173 – the production container, not the 5173 dev server), otherwise the framework's conventional port from `dependencies`/`devDependencies` (`next`/`nuxt`/`@nestjs/core`/`@sveltejs/kit`/`react-scripts` 3000, `vite` 5173, `@vue/cli-service` 8080, `@angular/cli` 4200, `astro` 4321, `gatsby` 9000, `serve` 3000, `http-server` 8080, `express` 3000). The map is deliberately small and mainstream: a hit that is wrong costs a fallback, not a wrong deploy.
+- [x] **Bounded source scan** – the last resort, and the reason it exists: **a manifest cannot declare a Go port.** `go.mod` has no port field and never will, because the language deliberately has no manifest-level default; the port lives in `main.go`. Patterns, in order: `ListenAndServe(":N")`, `Addr: ":N"`, `PORT=N`, an explicit `--port N`/`-p N` flag (shell *and* JSON-array form, so a `Dockerfile` `CMD ["uvicorn", …, "--port", "8000"]` counts; the separator gap is bounded and the digit group required, so `tsc -p tsconfig.json` and `--port-from-file` cannot match), a Python `port=N` keyword (`uvicorn.run(app, port=8000)`), `.listen(N)`, Django `runserver 0.0.0.0:N`, gunicorn `-b 0.0.0.0:N`, Spring `server.port=N`. Walk limits: ≤400 files, ≤4 MB read, skip `.git`/`node_modules`/`vendor`/`dist`/`build`/`target`/… , only known extensions plus extension-less `Procfile`/`Makefile`/`Dockerfile` and `.env*`. Version-like numbers (`20240101`, timeouts) and prefixed variables (`DB_PORT`, `serial_port`) cannot match – the underscore blocks the word boundary.
+- [x] **Stack** (`detectStack`): `go.mod` → go, `package.json` → node, `pyproject.toml`/`requirements.txt`/`manage.py` → python, `Cargo.toml` → rust, `Gemfile` → ruby, `composer.json` → php. Reported for the user's benefit only – no config value is derived from it.
+- [x] **App name**: the directory name, unless it is a generic placeholder (`src`, `app`, `project`, `test`, …), in which case the Go module path's last element (major-version suffix stripped: `github.com/acme/api/v2` → `api`) or the npm `name` is used. A descriptive directory name always wins.
+- [x] **Python conventions** (`detectPythonPort`, `pythonDependencies`): the Node equivalent of the `package.json` table, since a requirements file is the only place a Python project names its server. Dependencies are collected from `requirements*.txt`, `pyproject.toml` (`[project] dependencies`), `Pipfile` and `setup.py` (`install_requires`) – extras, version specifiers and environment markers are stripped (`uvicorn[standard]>=0.29` → `uvicorn`). Servers first: `uvicorn`/`gunicorn`/`hypercorn`/`daphne` 8000, `waitress` 8080, `fastapi` 8000, `flask` 5000, `django` 8000, `sanic` 8000, `aiohttp` 8080, `pyramid` 6543, `bottle` 8080, `tornado` 8888, `streamlit` 8501, `gradio` 7860.
+- [x] **Honesty (locked):** when nothing is detected, **no port is written** – not even a default (OD-04). `init` prints `port NOT SET` and an `ACTION REQUIRED` block; the generated config is deliberately incomplete and `ApplyDefaults` refuses it, naming the field and both failure modes (healthcheck timeout for `single`, 502 proxy for compose/swarm). `ApplyDefaults` is split so that `init` can run every non-port default while leaving `port`/`host_port` unset. Malformed input (broken JSON/YAML, `EXPOSE banana`) degrades to the next source and never fails `init`.
 
 ---
 
@@ -333,7 +354,7 @@ Shared for both drivers:
 - [x] CLI framework `github.com/spf13/cobra` WITHOUT `viper` (locked – single `easydrop.toml`, cobra flags suffice).
 - [x] Commands from `docs/cli-spec.md`: `init [--force]` (via `config.Scaffold`+`WriteConfig`), `deploy [-c/--config] [--no-cache] [--blue-green] [--skip-bootstrap]`, `status`, `logs [app_name] [-f/--follow] [-n/--tail]`, `rollback [app_name]`, `teardown [app_name]` (M12). `mcp-server` lands in Milestone 8.
 - [x] `deploy` pipeline (`runDeploy`): parse → overlay `--no-cache`/`--blue-green` (`applyDeployFlags`, never unsets config-true) → gate `driver.type == single` → signal-aware ctx → `NewExecutor` → Bootstrap (skipped with `--skip-bootstrap`) → `Build` with `SrcDir` = config file's directory → `SingleDriver` (`BlueGreen` from config, `Ingress` wired when domain non-empty) → `Deploy` → Certbot when `nginx.ssl && domain != ""` (manager no-ops on localhost).
-- [x] `init` scaffolding (`config.Scaffold`, FR-02): EXPOSE port from Dockerfile (default 8080), compose driver on compose files, app name = sanitized dir base, server = localhost + current user. `WriteConfig` refuses overwrite without `--force`; output round-trips through `ParseConfig` (tested).
+- [x] `init` scaffolding (`config.Scaffold`, FR-02, **M14 detection rules in §1.4**): `WriteConfig` refuses overwrite without `--force`; output round-trips through `ParseConfig` (tested). Every detected value is reported with its source (`ScaffoldResult`), and a defaulted port is called out in the output.
 - [x] Cross-field note (locked): `Bootstrapper.ensureDockerGroup` checks `id -nG` membership first and skips `usermod` when already in the docker group (idempotent, avoids pointless sudo).
 
 ## §8. MCP Server (Milestone 8)
@@ -437,6 +458,44 @@ Shared for both drivers:
   only matter if the vault ever becomes a deploy-time credential source.
 - **Verified:** unit tests for every documented case plus a manual check that an
   unset variable aborts the command before any SSH connection is attempted.
+
+### OD-04: Should `init` default the port when detection finds nothing?
+- **Context (M14 smoke):** with no `EXPOSE`, no compose file and no port literal
+  anywhere, `init` wrote `app.port = 8080`. The failure mode of a wrong port is
+  quiet and expensive: the image builds, the container starts, and the problem
+  only appears later – for the `single` driver as a healthcheck timeout after 10
+  attempts, and for **compose/swarm as a fully successful deploy with a 502
+  proxy**, because those drivers have no HTTP probe at all
+  (`ComposeDriver.checkRunning` only inspects `compose ps`). The user would
+  then debug "the service is unreachable" with an invented number in the config
+  as the cause.
+- **Options:**
+  - **A:** keep the 8080 default and warn in the output. Cheap, but the config
+    on disk still contains a value nobody chose – and anything that reads the
+    file without the warning (an agent, a CI script, a teammate) inherits it.
+  - **B (chosen):** write no port. `app.port` gets `omitempty`, so the key is
+    absent from the generated file; `ApplyDefaults` then refuses it with a
+    message naming the field and explaining both failure modes. The file is
+    deliberately incomplete, one edit away from working, and every consumer
+    fails fast instead of deploying a guess.
+  - **C:** refuse to write the file at all. Worst of both: the user gets nothing
+    to edit, and `init` stops doing its job.
+- **Decision (M14, option B):** `Scaffold` skips the port pair entirely when
+  detection is empty (it calls `applyNonPortDefaults`, so `host_port` is not
+  fabricated from an absent `port` either). `init` prints `port NOT SET` plus an
+  `ACTION REQUIRED` block listing the usual suspects; `init_project` tells the
+  agent to ask the user and set the port *before* deploying, so an agent cannot
+  paper over the gap. Every other default is still written.
+- **Side effect worth knowing:** requiredness in the generated JSON Schema used
+  to be inferred from the `omitempty` tag, which would have dropped `app.port`
+  from `required` and made the published schema contradict the parser. It is now
+  an explicit list (`requiredFields` in `internal/mcp/schema.go`).
+- **Status:** RESOLVED in M14.
+- **Verified:** `TestScaffoldOmitsPortWhenUndetected` asserts the written file
+  contains neither `port` nor `host_port`, still carries every other default,
+  and that `ParseConfig` rejects it with the actionable message; a live run
+  confirms `easydrop deploy` fails on such a config before opening any
+  connection to a host.
 
 ---
 
