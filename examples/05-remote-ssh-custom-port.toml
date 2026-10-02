@@ -1,0 +1,31 @@
+# 05 – Remote host behind a non-standard SSH port
+# Same as 03, but the host listens on 2222 (a common hardening step) and runs
+# behind a jump host. Put the ProxyJump in ~/.ssh/config – EasyDrop uses the
+# plain golang.org/x/crypto/ssh dialer and does not read ssh_config, so a jump
+# host must be handled by an ssh-agent-forwarded key or a direct route.
+#
+# `server.port` is the SSH port, NOT the app port: the app port lives in
+# [app]. Mixing them up is the most common config mistake.
+
+[app]
+name = "internal-tool"
+port = 8000
+# Published on the host as 8001 – the host port does not have to match the
+# container port. Blue-Green uses the pair {8001, 8002}.
+host_port = 8001
+
+[server]
+host = "vpn.internal.example.com"
+user = "ops"
+ssh_key = "~/.ssh/id_ed25519"
+port = 2222
+
+[build]
+strategy = "remote"
+
+[driver]
+type = "single"
+
+[nginx]
+domain = ""
+ssl = false
