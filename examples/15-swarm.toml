@@ -1,0 +1,38 @@
+# 15 – Docker Swarm stack
+# Ships the workspace, builds the service images on the node, initialises Swarm
+# if needed, and runs `docker stack deploy -c <file> easydrop-<app.name>`.
+# After the deploy EasyDrop waits for the services to reach their desired
+# replica count.
+#
+# How it differs from `compose`:
+#   * the host must be a Swarm manager (EasyDrop runs `docker swarm init` when
+#     the node is not part of a swarm – on an existing cluster it does not)
+#   * `compose_file` names the file here too, and the stack name is
+#     `easydrop-<app.name>`
+#   * `build.strategy` and `blue_green` are compose/swarm-unsupported
+#   * no HTTP healthcheck probe: replicas are the readiness signal
+#
+# Scaling is done in the compose file (deploy.replicas), not in easydrop.toml.
+# Other nodes join the stack themselves – easydrop manages one node per run.
+
+[app]
+name = "worker"
+# Published host port; the routing mesh and your overlay ports come from the
+# compose file, app.port is only what Nginx would proxy to.
+port = 9000
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+ssh_key = "~/.ssh/id_ed25519"
+
+[build]
+strategy = "remote"
+
+[driver]
+type = "swarm"
+compose_file = "docker-compose.yml"
+
+[nginx]
+domain = ""
+ssl = false
