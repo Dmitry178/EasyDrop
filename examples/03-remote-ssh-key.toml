@@ -1,0 +1,47 @@
+# 03 – Remote VPS over SSH key (the common case)
+# The workspace is archived, uploaded over SFTP, built on the host, and run as
+# a single container. No registry, no domain, no TLS.
+#
+# Prerequisites on the target:
+#   * the SSH user can log in with the key below (test with `ssh -i ... user@host`)
+#   * passwordless sudo for the bootstrapper, or pass --skip-bootstrap
+#   * the SSH port is reachable from your machine
+#
+# About the credential: `server.ssh_key` is only a PATH, so this file stays
+# secret-free and committable – the private key itself never leaves ~/.ssh.
+# Two equally good alternatives if a path is not what you want:
+#   * ssh-agent: empty `ssh_key` and `password` entirely, then
+#     `eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519` (also the only way
+#     to use a passphrase-protected key);
+#   * `password = "${EASYDROP_SSH_PASSWORD}"` with the value in the git-ignored
+#     .easydrop.env (or .env) next to this config – see 20-secrets-from-env.toml.
+# This config is meant to be committed, so a literal `server.password` is
+# discouraged here: a live credential in git history is awkward to remove. For
+# a config that never enters a repository a literal is fine – see
+# 04-remote-ssh-password.toml.
+#
+# Try: easydrop deploy -c examples/03-remote-ssh-key.toml
+
+[app]
+name = "my-awesome-api"
+port = 8080
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+# "~" expands to your home directory. Only the "~/" form is supported.
+ssh_key = "~/.ssh/id_ed25519"
+# Omit to use the default SSH port.
+port = 22
+
+[build]
+# Build on the host: sources travel, the image never needs a registry.
+strategy = "remote"
+
+[driver]
+type = "single"
+
+[nginx]
+# No domain yet – the app is only reachable on the host port.
+domain = ""
+ssl = false
