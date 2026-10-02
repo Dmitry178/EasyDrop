@@ -1,0 +1,34 @@
+# 14 – Compose with a custom compose file
+# Same as 13, but deploys a different file from the same workspace – the usual
+# setup for shipping `docker-compose.yml` (dev) and `docker-compose.prod.yml`
+# (deploy) side by side.
+#
+# The file is read from the workspace you deploy (the directory containing
+# easydrop.toml), staged on the host, and invoked as
+#   docker compose -p easydrop-<app.name> -f <staged>/docker-compose.prod.yml
+# so only the named file is used – no `COMPOSE_FILE` juggling, no merge with a
+# stray docker-compose.yml sitting next to it.
+#
+# All commands (`status`, `logs`, `rollback`, `teardown`) resolve the live file
+# from the host state, so switching this value later does not orphan the running
+# stack.
+
+[app]
+name = "shop"
+port = 80
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+ssh_key = "~/.ssh/id_ed25519"
+
+[build]
+strategy = "remote"
+
+[driver]
+type = "compose"
+compose_file = "docker-compose.prod.yml"
+
+[nginx]
+domain = ""
+ssl = false
