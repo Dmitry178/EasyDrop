@@ -1,0 +1,114 @@
+# 99 – Full reference: every key, with its default
+# Not a scenario – a complete map of the file. Read it once to learn the
+# schema, then copy the numbered examples for the case you actually need.
+#
+# Only `app.name` and `server.host` are required; everything else has a default.
+# Unknown keys are silently ignored, so a typo like `build.stratgy` fails as
+# "missing build.strategy" much later – the MCP resource
+# `easydrop://schema/config` (docs/mcp-spec.md) is generated from the parser
+# itself and can validate your file.
+
+[app]
+# REQUIRED. Docker-compatible lowercase name: ^[a-z0-9]+(?:[._-][a-z0-9]+)*$
+# Also becomes the project/stack name (compose → "easydrop-<name>",
+# swarm → stack "easydrop-<name>") and the default image name.
+name = "my-awesome-api"
+
+# REQUIRED. Port the app listens on INSIDE the container. 1-65535.
+# With the compose/swarm drivers this is instead the port published on the
+# host, because that is what the Nginx vhost proxies to.
+port = 8080
+
+# Optional. Port published on the host. Defaults to `port` when omitted.
+# The Blue-Green pair is {host_port, host_port + 1}, so 65535 is rejected.
+host_port = 8080
+
+# Optional. HTTP path probed for 200 after the container starts.
+# Default "/". 10 attempts, ~2s apart.
+health_check_path = "/healthz"
+
+[server]
+# REQUIRED. "localhost" or "127.0.0.1" runs everything locally (no SSH);
+# anything else is dialled over SSH. Default: none – must be set.
+host = "203.0.113.10"
+
+# SSH user. Required for remote hosts, ignored for localhost.
+user = "deploy"
+
+# Private key path. Default "~/.ssh/id_ed25519" → "~/.ssh/id_rsa" is what
+# `easydrop init` writes. Only the "~/" form is expanded; "~user/..." is not.
+# It is only a PATH, so it is safe to commit. Leave it empty to authenticate
+# via ssh-agent instead (preferred when the key has a passphrase).
+ssh_key = "~/.ssh/id_ed25519"
+
+# SSH password fallback, tried only after the key file and ssh-agent. For a
+# config that goes into git, do NOT write the value literally: a live credential
+# in git history cannot be un-leaked by rotating the password. Two supported
+# alternatives for a committed config, best first:
+#   1. leave this empty and use ssh-agent
+#      (`eval "$(ssh-agent -s)" && ssh-add <key>`);
+#   2. reference a variable – `password = "${EASYDROP_SSH_PASSWORD}"` – and keep
+#      the value in the git-ignored .easydrop.env (preferred) or .env sitting
+#      next to this file. Both are excluded from the archive shipped to the
+#      host, so the credential never reaches the server.
+# `${VAR:-default}` supplies a fallback value; an unset ${VAR} fails the command
+# before any SSH connection, naming the field but never the value.
+# For a config that never enters a VCS (local experiments, a throwaway box) a
+# literal is fine and simpler – `chmod 600 easydrop.toml` and keep it out of
+# version control. See 20-secrets-from-env.toml and 04-remote-ssh-password.toml.
+# Note: the encrypted MCP vault (manage_server) is NOT read during deploys.
+password = ""
+
+# SSH port. Default 22. (Not the app port – that is `app.port`.)
+port = 22
+
+[build]
+# "remote" (default): ship the workspace, build the image on the host, no
+# registry needed. "local": build here, push to `registry`, host pulls it.
+# "local" requires `single` + `registry`.
+strategy = "remote"
+
+# Registry for strategy = "local", WITHOUT a scheme: "ghcr.io/myorg",
+# "registry.example.com:5000/team". A trailing slash is trimmed.
+registry = "ghcr.io/myorg"
+
+# Image override for strategy = "local": "name", "name:tag" or "ns/name:tag".
+# Defaults to app.name, tag defaults to "latest". The final reference is
+# "<registry>/<image>". Ignored by the remote strategy.
+image = "web:2.1"
+
+# Bypass the Docker build cache on every deploy. `easydrop deploy --no-cache`
+# forces it true for a single run.
+no_cache = false
+
+[driver]
+# "single" (default) | "compose" | "swarm".
+# "compose"/"swarm" ship the workspace and build services on the node, so
+# `build.strategy` does not apply to them.
+type = "single"
+
+# Compose/Swarm only: the compose file inside the workspace, also used as the
+# `docker stack deploy -c` file. Default "docker-compose.yml".
+compose_file = "docker-compose.yml"
+
+# Zero-downtime Blue-Green swaps, `single` driver ONLY (deploying compose or
+# swarm with this set is an error). Keeps the previous container stopped as
+# "<name>-active-previous" as the rollback target. Default false = in-place
+# update with brief downtime. `easydrop deploy --blue-green` forces it true.
+blue_green = true
+
+[nginx]
+# Public domain for the reverse proxy. EMPTY = no ingress at all: the
+# container just runs, and nothing is written to /etc/nginx. A non-empty value
+# renders /etc/nginx/sites-available/<domain>, symlinks it into
+# sites-enabled, runs `nginx -t`, then reloads.
+domain = "api.example.com"
+
+# Issue a Let's Encrypt certificate for `domain` (HTTP-01 on port 80, so 80
+# and 443 must be reachable from the internet and DNS must already resolve).
+# Default false. Requires `domain` to be non-empty.
+ssl = true
+
+# ACME contact address. Default "". Empty registers without an email – nobody
+# warns you before expiry.
+email = "ops@example.com"
