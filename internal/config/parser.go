@@ -50,7 +50,42 @@ func ParseConfig(path string) (*models.Config, error) {
 
 // ApplyDefaults fills fallback defaults and expands server.ssh_key.
 // Exported for the init scaffolding, which builds Config in memory.
+//
+// A zero app.port is rejected here rather than defaulted: `init` deliberately
+// leaves the key out when it cannot detect a port (OD-04), and a missing value
+// has to stop the deploy instead of silently becoming 8080 – a wrong port does
+// not fail the build, it fails the healthcheck for `single` and produces a 502
+// for compose/swarm, which have no HTTP probe at all.
 func ApplyDefaults(cfg *models.Config) error {
+	if err := applyNonPortDefaults(cfg); err != nil {
+		return err
+	}
+	if cfg.App.Port == 0 {
+		return fmt.Errorf("validation error: app.port is required: set the port your app " +
+			"listens on INSIDE the container (easydrop init omits it when it cannot detect " +
+			"one). A wrong value does not fail the build – it fails the deploy healthcheck " +
+			"for the single driver, and yields a 502 from the proxy for compose/swarm")
+	}
+	if err := validatePort(cfg.App.Port, "app.port"); err != nil {
+		return err
+	}
+	if cfg.App.HostPort == 0 {
+		cfg.App.HostPort = cfg.App.Port
+	}
+	if err := validatePort(cfg.App.HostPort, "app.host_port"); err != nil {
+		return err
+	}
+	if cfg.App.HostPort == 65535 {
+		return fmt.Errorf("validation error: app.host_port 65535 leaves no port for the Blue-Green pair")
+	}
+
+	return nil
+}
+
+// applyNonPortDefaults fills every default except the port pair. init uses it
+// to build a config that has no port yet: defaulting host_port to an absent
+// port would fabricate a value the user never chose.
+func applyNonPortDefaults(cfg *models.Config) error {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 22
 	}
@@ -83,22 +118,6 @@ func ApplyDefaults(cfg *models.Config) error {
 	if strings.TrimSpace(cfg.App.HealthCheckPath) == "" {
 		cfg.App.HealthCheckPath = "/"
 	}
-
-	// Port split (M10): `port` is the in-container port, `host_port` the
-	// published one. Omitted host_port keeps the pre-M10 behavior.
-	if err := validatePort(cfg.App.Port, "app.port"); err != nil {
-		return err
-	}
-	if cfg.App.HostPort == 0 {
-		cfg.App.HostPort = cfg.App.Port
-	}
-	if err := validatePort(cfg.App.HostPort, "app.host_port"); err != nil {
-		return err
-	}
-	if cfg.App.HostPort == 65535 {
-		return fmt.Errorf("validation error: app.host_port 65535 leaves no port for the Blue-Green pair")
-	}
-
 	return nil
 }
 
