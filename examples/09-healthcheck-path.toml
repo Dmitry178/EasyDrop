@@ -1,0 +1,32 @@
+# 09 – Custom healthcheck path
+# After starting the container EasyDrop polls
+# `http://127.0.0.1:<host_port><health_check_path>` until it answers 200, and
+# aborts the deploy if it never does. The default "/" is wrong for apps that
+# only answer on a dedicated endpoint, or that redirect (302) on "/".
+#
+# Point this at a cheap, dependency-light path. Do NOT point it at an endpoint
+# that requires your database to be reachable – that turns a slow start into a
+# failed deploy, and with Blue-Green it leaves the old container live.
+#
+# Retries: 10 attempts, ~2s apart, then the deploy fails.
+
+[app]
+name = "my-awesome-api"
+port = 8080
+# The endpoint must return 200 while the app is genuinely ready.
+health_check_path = "/healthz"
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+ssh_key = "~/.ssh/id_ed25519"
+
+[build]
+strategy = "remote"
+
+[driver]
+type = "single"
+
+[nginx]
+domain = ""
+ssl = false
