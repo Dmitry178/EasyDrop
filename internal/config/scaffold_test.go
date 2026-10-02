@@ -68,11 +68,29 @@ func TestScaffoldBareDirDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scaffold() unexpected error: %v", err)
 	}
-	if cfg.App.Port != 8080 {
-		t.Errorf("App.Port = %d, want default 8080", cfg.App.Port)
+	// OD-04: nothing stated a port, so none is invented – not even 8080.
+	if cfg.App.Port != 0 {
+		t.Errorf("App.Port = %d, want 0 (no port detected, no default)", cfg.App.Port)
 	}
+	if !cfg.PortMissing() {
+		t.Errorf("PortMissing() = false, want true")
+	}
+	// Every other default still applies.
 	if cfg.Driver.Type != "single" {
 		t.Errorf("Driver.Type = %q, want single", cfg.Driver.Type)
+	}
+	if cfg.Build.Strategy != "remote" {
+		t.Errorf("Build.Strategy = %q, want remote", cfg.Build.Strategy)
+	}
+	if cfg.Server.Host != "localhost" || cfg.Server.Port != 22 {
+		t.Errorf("Server defaults not applied: %+v", cfg.Server)
+	}
+	if cfg.App.HealthCheckPath != "/" {
+		t.Errorf("HealthCheckPath = %q, want /", cfg.App.HealthCheckPath)
+	}
+	// host_port must not be fabricated from an absent port.
+	if cfg.App.HostPort != 0 {
+		t.Errorf("App.HostPort = %d, want 0", cfg.App.HostPort)
 	}
 	if cfg.App.Name == "" {
 		t.Errorf("App.Name must default to directory name")
@@ -96,17 +114,17 @@ func TestSanitizeAppName(t *testing.T) {
 func TestWriteConfigRefusesOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "easydrop.toml")
-	cfg, err := Scaffold(mkScaffoldDir(t, map[string]string{"Dockerfile": "FROM x\n"}))
+	cfg, err := Scaffold(mkScaffoldDir(t, map[string]string{"Dockerfile": "FROM x\nEXPOSE 8080\n"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteConfig(path, cfg, false); err != nil {
+	if err := WriteConfig(path, cfg.Config, false); err != nil {
 		t.Fatalf("first WriteConfig: %v", err)
 	}
-	if err := WriteConfig(path, cfg, false); err == nil {
+	if err := WriteConfig(path, cfg.Config, false); err == nil {
 		t.Errorf("second WriteConfig without force must fail")
 	}
-	if err := WriteConfig(path, cfg, true); err != nil {
+	if err := WriteConfig(path, cfg.Config, true); err != nil {
 		t.Errorf("WriteConfig with force must succeed: %v", err)
 	}
 	// Round-trip: written file must parse.
