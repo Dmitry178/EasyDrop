@@ -1,0 +1,49 @@
+# 13 – Docker Compose stack
+# The workspace (including docker-compose.yml and your sources) is shipped to
+# the host, built there with `docker compose build`, and started as project
+# `easydrop-<app.name>`. Multiple services, networks and volumes are fine.
+#
+# How it differs from `single`:
+#   * `app.port` is the port your compose file PUBLISHES on the host – it is
+#     what the Nginx config proxies to. There is no `host_port` split and no
+#     container-name rewriting here, so make the published port and app.port
+#     agree.
+#   * the stack itself decides health; EasyDrop waits for `compose ps` to
+#     report running services instead of probing an HTTP endpoint.
+#   * `blue_green` is NOT supported: it errors out for compose and swarm.
+#   * `build.strategy` is ignored – compose builds its own service images on
+#     the node, so "local" is a single-driver-only strategy.
+#
+# State lives in ~/.easydrop/apps/<app> on the host (~/easydrop/apps on a
+# snap-confined daemon), and staging is kept at <staging>/builds/<app> for
+# debugging a failed deploy.
+#
+# If your stack relies on a `.env` for variable substitution, note that
+# easydrop excludes `.env` from the shipped archive (it reads that file for
+# ${VAR} credentials). Add `!.env` to your .dockerignore to ship it anyway.
+#
+# Try: easydrop deploy -c examples/13-compose.toml
+
+[app]
+name = "shop"
+# Must match the host-side published port in your compose file.
+port = 8080
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+ssh_key = "~/.ssh/id_ed25519"
+
+[build]
+strategy = "remote"
+
+[driver]
+type = "compose"
+# Name of the compose file in the workspace root. Defaults to
+# "docker-compose.yml"; `easydrop init` also picks up "compose.yml" and the
+# .yaml spellings.
+compose_file = "docker-compose.yml"
+
+[nginx]
+domain = ""
+ssl = false
