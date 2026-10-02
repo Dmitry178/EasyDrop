@@ -1,0 +1,42 @@
+# 11 – Build locally, push to a registry (no sources on the host)
+# The "local" strategy builds the image on the machine running EasyDrop, pushes
+# it to `build.registry`, and makes the target host PULL it. Only the image
+# crosses the wire – the server never sees your source tree, which is what you
+# want when the host is shared, audited, or air-gapped from your repo.
+#
+# Requirements:
+#   * `build.registry` is set, WITHOUT a scheme: "ghcr.io/myorg" or
+#     "registry.example.com:5000/team". "https://..." is rejected on purpose.
+#   * `driver.type = "single"` – compose/swarm build their services on the node.
+#   * you are logged in locally (`docker login ghcr.io`) AND on the host, or the
+#     registry is anonymous-pull.
+#
+# The image reference is `<registry>/<app.name>:latest` unless `build.image`
+# overrides it (see 12). The host runs exactly that pushed reference.
+#
+# Try: easydrop deploy -c examples/11-build-local-registry.toml
+
+[app]
+name = "my-awesome-api"
+port = 8080
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+ssh_key = "~/.ssh/id_ed25519"
+
+[build]
+# "local" = build here, push, pull on the host. "remote" (default) ships the
+# workspace and builds there instead.
+strategy = "local"
+# Namespace/host of the registry, no scheme, no trailing slash.
+registry = "ghcr.io/myorg"
+# Optional: pin name:tag instead of using app.name:latest.
+image = ""
+
+[driver]
+type = "single"
+
+[nginx]
+domain = ""
+ssl = false
