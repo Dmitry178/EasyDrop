@@ -22,11 +22,27 @@ type initInput struct {
 
 func handleInit(ctx context.Context, _ *sdk.CallToolRequest, in initInput) (*sdk.CallToolResult, textOut, error) {
 	_ = ctx
-	cfg, err := deploy.Init(".", in.Force)
+	res, err := deploy.Init(".", in.Force)
 	if err != nil {
 		return errResult(fmt.Sprintf("init failed: %v", err))
 	}
-	return okResult(fmt.Sprintf("wrote easydrop.toml (app=%q port=%d driver=%s)", cfg.App.Name, cfg.App.Port, cfg.Driver.Type))
+	msg := fmt.Sprintf("wrote easydrop.toml: app=%s (%s), driver=%s",
+		res.App.Name, res.AppNameSource, res.Driver.Type)
+	if res.PortMissing() {
+		// An agent must never proceed to deploy with a port it invented: for the
+		// single driver the deploy fails at the healthcheck, and for
+		// compose/swarm it succeeds and leaves a 502 proxy behind.
+		msg += fmt.Sprintf(". ACTION REQUIRED: [app].port is NOT SET and was deliberately not " +
+			"guessed – nothing in the project states the port. Ask the user for the port the app " +
+			"listens on INSIDE the container, set it, and only then deploy")
+	} else {
+		msg += fmt.Sprintf(", port=%d (%s)", res.App.Port, res.PortSource)
+	}
+	if res.Stack != "" {
+		msg += fmt.Sprintf(", stack=%s", res.Stack)
+	}
+	msg += ". [server].host is \"localhost\"; set it to the target host before deploying"
+	return okResult(msg)
 }
 
 type deployInput struct {
