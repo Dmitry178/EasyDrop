@@ -5,8 +5,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -14,22 +12,51 @@ import (
 	"easydrop/internal/models"
 )
 
-// defaultAppPort is used when no EXPOSE directive is found.
-const defaultAppPort = 8080
+// ScaffoldResult pairs the generated config with what was detected and where
+// each value came from (M14). `init` must be able to say "port 3000, from
+// package.json" – and, when nothing declared a port, that it left the key out
+// instead of writing a guess (OD-04).
+type ScaffoldResult struct {
+	*models.Config
+	// PortSource explains app.port; PortMissing reports that there is none.
+	PortSource string
+	// AppNameSource explains app.name.
+	AppNameSource string
+	// Stack is the detected primary language, or "" when unknown.
+	Stack string
+}
 
-var exposePattern = regexp.MustCompile(`(?i)^\s*EXPOSE\s+(\d+)`)
+// PortMissing reports that nothing in the project stated the listen port, so
+// `app.port` was left out of the generated config. Such a config is
+// deliberately incomplete: the deploy fails with an actionable message instead
+// of building fine and breaking later.
+func (r *ScaffoldResult) PortMissing() bool {
+	return r != nil && r.PortSource == PortSourceUnknown
+}
 
-// Scaffold scans dir (Dockerfile, compose files, go.mod, package.json) and
-// builds a pre-filled Config. It never touches the filesystem.
-func Scaffold(dir string) (*models.Config, error) {
+// Scaffold scans dir and builds a pre-filled Config.
+//
+// Detection (M14) reads the Dockerfile, the compose file, package.json, the
+// language manifests and – as a bounded last resort – the project's own source
+// for a literal listen port. It never touches anything outside dir and never
+// contacts a host: no SSH, no Docker, no network.
+//
+// When no port is detected, `app.port` stays 0 and is omitted from the written
+// file. It is NOT defaulted to 8080: see PortMissing.
+func Scaffold(dir string) (*ScaffoldResult, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve dir %q: %w", dir, err)
 	}
+
+	driver, composeFile := detectDriver(abs)
+	port, portSource := detectPort(abs, driver, composeFile)
+	name, nameSource := detectAppName(abs, filepath.Base(abs))
+
 	cfg := &models.Config{
 		App: models.AppConfig{
-			Name:            sanitizeAppName(filepath.Base(abs)),
-			Port:            detectPort(abs),
+			Name:            name,
+			Port:            port,
 			HealthCheckPath: "/",
 		},
 		Server: models.ServerConfig{
@@ -40,20 +67,28 @@ func Scaffold(dir string) (*models.Config, error) {
 		},
 		Build: models.BuildConfig{Strategy: "remote"},
 		Driver: models.DriverConfig{
-			Type: detectDriver(abs),
+			Type:        driver,
+			ComposeFile: composeFile,
 		},
 		Nginx: models.NginxConfig{SSL: false},
 	}
-	if cfg.Driver.Type == "compose" {
-		cfg.Driver.ComposeFile = "docker-compose.yml"
-		if _, err := os.Stat(filepath.Join(abs, "docker-compose.yaml")); err == nil {
-			cfg.Driver.ComposeFile = "docker-compose.yaml"
-		}
+	// Only the full defaulting when a port is known: host_port defaults to the
+	// app port, so running it against an absent port would fabricate a second
+	// value the user never chose.
+	if port == 0 {
+		err = applyNonPortDefaults(cfg)
+	} else {
+		err = ApplyDefaults(cfg)
 	}
-	if err := ApplyDefaults(cfg); err != nil {
+	if err != nil {
 		return nil, err
 	}
-	return cfg, nil
+	return &ScaffoldResult{
+		Config:        cfg,
+		PortSource:    portSource,
+		AppNameSource: nameSource,
+		Stack:         detectStack(abs),
+	}, nil
 }
 
 // WriteConfig marshals cfg to path. Without force it refuses to overwrite.
@@ -73,30 +108,15 @@ func WriteConfig(path string, cfg *models.Config, force bool) error {
 	return nil
 }
 
-// detectDriver prefers compose when a compose file is present.
-func detectDriver(dir string) string {
-	for _, f := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
-			return "compose"
-		}
+// detectDriver prefers compose when a compose file is present, and returns the
+// file it found so `driver.compose_file` names the same file the driver runs
+// (M14: previously a project with compose.yml was detected as compose but still
+// got compose_file = "docker-compose.yml").
+func detectDriver(dir string) (driver, composeFile string) {
+	if file, ok := findComposeFile(dir); ok {
+		return "compose", file
 	}
-	return "single"
-}
-
-// detectPort reads the first EXPOSE port from the Dockerfile, if any.
-func detectPort(dir string) int {
-	data, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
-	if err != nil {
-		return defaultAppPort
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if m := exposePattern.FindStringSubmatch(line); m != nil {
-			if port, err := strconv.Atoi(m[1]); err == nil && port >= 1 && port <= 65535 {
-				return port
-			}
-		}
-	}
-	return defaultAppPort
+	return "single", ""
 }
 
 // sanitizeAppName lowercases the directory base and replaces anything
