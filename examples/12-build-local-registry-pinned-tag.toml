@@ -1,0 +1,36 @@
+# 12 – Local build with a pinned image tag
+# Same as 11, but `build.image` fixes the repository and tag, so the image name
+# no longer tracks `app.name` and stops moving on every deploy.
+#
+# How the final reference is resolved: `[registry/]<image>:<tag>` where
+# `build.image` may be `name`, `name:tag` or `ns/name:tag`; the tag defaults to
+# "latest" and the registry is prepended unless the image already carries one.
+#
+#   registry = "ghcr.io/myorg", image = "web:2.1"
+#     → builds and pushes ghcr.io/myorg/web:2.1, host pulls exactly that
+#
+# This is the shape to use from CI: a git SHA or version in the tag makes a
+# deploy traceable. Combine with `blue_green = true` for instant rollback.
+
+[app]
+name = "my-awesome-api"
+port = 8080
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+ssh_key = "~/.ssh/id_ed25519"
+
+[build]
+strategy = "local"
+registry = "ghcr.io/myorg"
+image = "web:2.1"
+
+[driver]
+type = "single"
+blue_green = true
+
+[nginx]
+domain = "api.example.com"
+ssl = true
+email = "ops@example.com"
