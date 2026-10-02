@@ -274,14 +274,16 @@ func Teardown(ctx context.Context, configPath, appName string) error {
 	return drv.Teardown(ctx, name)
 }
 
-// Init scaffolds easydrop.toml in dir from its contents.
-func Init(dir string, force bool) (*models.Config, error) {
-	cfg, err := config.Scaffold(dir)
+// Init scaffolds easydrop.toml in dir from its contents. The result carries
+// the detected values and their sources (M14) so the caller – CLI or MCP – can
+// report what was detected instead of a bare "done".
+func Init(dir string, force bool) (*config.ScaffoldResult, error) {
+	res, err := config.Scaffold(dir)
 	if err != nil {
 		return nil, err
 	}
-	if err := config.WriteConfig(filepath.Join(dir, "easydrop.toml"), cfg, force); err != nil {
+	if err := config.WriteConfig(filepath.Join(dir, "easydrop.toml"), res.Config, force); err != nil {
 		return nil, err
 	}
-	return cfg, nil
+	return res, nil
 }
