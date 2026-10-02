@@ -12,7 +12,13 @@ type Config struct {
 type AppConfig struct {
 	Name string `toml:"name"`
 	// Port is the port the app listens on INSIDE the container.
-	Port int `toml:"port"`
+	//
+	// omitempty so that `easydrop init` can write a config WITHOUT a port when
+	// it could not detect one: a missing key reads as "not set yet" and fails
+	// validation with an actionable message, whereas `port = 0` would look like
+	// a value somebody chose. A guessed default is worse than neither – see
+	// OD-04.
+	Port int `toml:"port,omitempty"`
 	// HostPort is the port published on the host. Optional: when omitted it
 	// defaults to Port, so existing configs keep their behavior. The
 	// Blue-Green managed pair is {HostPort, HostPort+1}.
