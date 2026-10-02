@@ -1,0 +1,30 @@
+# 08 – Rebuild from scratch (bypass the Docker layer cache)
+# Setting `build.no_cache` makes every deploy pass `--no-cache` to the host
+# build. Use it when you suspect a stale layer (a dependency that changed
+# without a version bump, a base image you did not re-pull).
+#
+# Builds get much slower, so prefer the per-run flag for one-off debugging:
+#   easydrop deploy --no-cache
+#
+# `easydrop deploy` without flags and `no_cache = false` keeps the cache.
+
+[app]
+name = "my-awesome-api"
+port = 8080
+
+[server]
+host = "203.0.113.10"
+user = "deploy"
+ssh_key = "~/.ssh/id_ed25519"
+
+[build]
+strategy = "remote"
+# Applies to both strategies: the on-host build AND the local build + push.
+no_cache = true
+
+[driver]
+type = "single"
+
+[nginx]
+domain = ""
+ssl = false
