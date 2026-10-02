@@ -10,6 +10,7 @@ AI assistants invoke these structured primitives to safely manage infrastructure
 
 ### 1.1. `init_project`
 - **Description:** Scans the active local application layout to dynamically generate an optimized, pre-filled boilerplate deployment configuration file.
+- **Detection (M14, FR-02/FR-02B):** identical rules to CLI `init` (see `docs/cli-spec.md` §1.1) – compose `ports`/`expose`, Dockerfile `EXPOSE`, `package.json` (script port, then framework), a bounded source scan, then the `8080` fallback. The tool result must name the **source** of every value and must warn when the port is a guess, so the agent can correct `app.port` before deploying instead of discovering a healthcheck timeout. It also reports that `[server].host` is `localhost`.
 - **Arguments:**
   - `force` (boolean, optional): Overwrite an already existing `easydrop.toml` without prompting. Defaults to `false`. (Mirrors CLI `init --force`.)
 
@@ -59,7 +60,7 @@ The protocol maps contextual state metrics allowing connected LLM instances to a
 ## 3. Tool → Core mapping
 | Tool | Core entrypoint |
 |------|-----------------|
-| `init_project` | config scaffolding (Milestone 7, FR-02) |
+| `init_project` | config scaffolding (Milestone 7, FR-02; detection M14) |
 | `deploy_app` | `Bootstrapper.Bootstrap` → builder `Build(ctx, app)` → `SingleDriver.Deploy(ctx, app)` → Nginx/Certbot |
 | `get_status` | `SingleDriver.Status(ctx, appName)` |
 | `get_logs` | `SingleDriver.Logs(ctx, appName, lines, follow)` |
