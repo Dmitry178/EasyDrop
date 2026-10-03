@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,4 +202,80 @@ func TestHandleTeardownValidation(t *testing.T) {
 	if res == nil || !res.IsError {
 		t.Errorf("empty app_name must yield IsError result")
 	}
+}
+
+// TestHandleInitPortArgument pins the M15 contract on the MCP side: the tool
+// accepts an explicit port, and when nothing is detected it hands the agent the
+// same method the CLI prints – not a bare prohibition it cannot act on.
+func TestHandleInitPortArgument(t *testing.T) {
+	t.Run("explicit port overrides detection", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM x\nEXPOSE 3000\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(dir)
+		_, out, _ := handleInit(context.Background(), &sdk.CallToolRequest{}, initInput{Port: 8080})
+		if !strings.Contains(out.Message, "8080") {
+			t.Errorf("port argument must reach the config, got %q", out.Message)
+		}
+		written, err := os.ReadFile(filepath.Join(dir, "easydrop.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(written), "port = 8080") {
+			t.Errorf("port argument not written, got:\n%s", written)
+		}
+	})
+
+	t.Run("missing port returns an actionable instruction", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("nothing\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(dir)
+		_, out, _ := handleInit(context.Background(), &sdk.CallToolRequest{}, initInput{})
+		for _, want := range []string{
+			"NOT SET",
+			"ACTION REQUIRED",
+			"app.listen",             // the method
+			"edit the file",          // the obligation
+			"Ask the user only",      // when asking is allowed
+			`init_project { "port":`, // the tool's own escape hatch
+		} {
+			if !strings.Contains(out.Message, want) {
+				t.Errorf("agent-facing message missing %q, got:\n%s", want, out.Message)
+			}
+		}
+	})
+}
+
+// TestInitToolExposesPortOverTheWire checks what a model actually sees before
+// it calls the tool: the description must state the port caveat and the schema
+// must offer the `port` argument. Checked over a real session, because a
+// description that never reaches the wire is no description at all.
+func TestInitToolExposesPortOverTheWire(t *testing.T) {
+	sess := e2eClient(t)
+	res, err := sess.ListTools(context.Background(), &sdk.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tt := range res.Tools {
+		if tt.Name != "init_project" {
+			continue
+		}
+		for _, want := range []string{"port", "deploy_app"} {
+			if !strings.Contains(tt.Description, want) {
+				t.Errorf("init_project description must mention %q, got %q", want, tt.Description)
+			}
+		}
+		blob, err := json.Marshal(tt.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(blob), `"port"`) {
+			t.Errorf("init_project schema must expose `port`, got: %s", blob)
+		}
+		return
+	}
+	t.Fatalf("init_project tool not registered")
 }
