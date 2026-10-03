@@ -131,3 +131,98 @@ type = "single"
 		t.Errorf("Teardown() on a clean host must be nil, got: %v", err)
 	}
 }
+
+// feedLines pushes lines into a channel and closes it, mimicking a driver
+// that has finished streaming.
+func feedLines(lines ...string) <-chan string {
+	ch := make(chan string, len(lines))
+	for _, l := range lines {
+		ch <- l
+	}
+	close(ch)
+	return ch
+}
+
+func TestCompileLogFilter(t *testing.T) {
+	for _, tc := range []struct {
+		expr, wantKept, wantDropped string
+	}{
+		{"", "anything at all", ""},
+		{"error", "ERROR: boom", "all good"},
+		{"error|panic", "a PANIC here", "a warning"},
+		{"^FATAL", "FATAL: db gone", "not FATAL: false"},
+	} {
+		re, err := compileLogFilter(tc.expr)
+		if err != nil {
+			t.Fatalf("compileLogFilter(%q): %v", tc.expr, err)
+		}
+		if !re.MatchString(tc.wantKept) {
+			t.Errorf("filter %q must keep %q", tc.expr, tc.wantKept)
+		}
+		if tc.wantDropped != "" && re.MatchString(tc.wantDropped) {
+			t.Errorf("filter %q must drop %q", tc.expr, tc.wantDropped)
+		}
+	}
+	// An invalid expression is an error, not a filter that silently passes
+	// everything through – the latter would read as "the app logged nothing".
+	if _, err := compileLogFilter("error("); err == nil {
+		t.Fatalf("invalid regexp must be rejected")
+	} else if !strings.Contains(err.Error(), "invalid log filter") {
+		t.Errorf("error must name the problem, got: %v", err)
+	}
+}
+
+func TestCollectLogsFiltersAndCounts(t *testing.T) {
+	re, err := compileLogFilter("error|fatal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := collectLogs(feedLines(
+		"starting up",
+		"ERROR: db unreachable",
+		"retrying",
+		"FATAL: gave up",
+		"exiting",
+	), re, 0)
+	if got, want := res.Scanned, 5; got != want {
+		t.Errorf("Scanned = %d, want %d", got, want)
+	}
+	if got, want := res.Matched, 2; got != want {
+		t.Errorf("Matched = %d, want %d", got, want)
+	}
+	if len(res.Lines) != 2 || !strings.Contains(res.Lines[0], "db unreachable") ||
+		!strings.Contains(res.Lines[1], "gave up") {
+		t.Errorf("filtered lines wrong: %v", res.Lines)
+	}
+}
+
+func TestCollectLogsLimitCountsKeptLines(t *testing.T) {
+	re, _ := compileLogFilter("error")
+	// The limit bounds what is *returned*, so a snapshot stays small even when
+	// it scans a wide window.
+	res := collectLogs(feedLines("error 1", "noise", "error 2", "error 3"), re, 2)
+	if len(res.Lines) != 2 || res.Matched != 2 {
+		t.Errorf("limit must cap kept lines: %+v", res)
+	}
+	if res.Scanned != 3 {
+		t.Errorf("Scanned = %d, want 3 (collection stops once the limit is hit)", res.Scanned)
+	}
+}
+
+func TestCollectLogsNoFilterKeepsEverything(t *testing.T) {
+	re, _ := compileLogFilter("")
+	res := collectLogs(feedLines("a", "b", "c"), re, 0)
+	if res.Scanned != 3 || res.Matched != 3 || len(res.Lines) != 3 {
+		t.Errorf("empty filter must be a pass-through: %+v", res)
+	}
+}
+
+func TestCollectLogsEmptyResultIsDistinguishable(t *testing.T) {
+	re, _ := compileLogFilter("fatal")
+	res := collectLogs(feedLines("all fine", "still fine"), re, 0)
+	// The distinction matters: Scanned > 0 with Matched == 0 means "the filter
+	// missed", not "the container was silent".
+	if res.Scanned != 2 || res.Matched != 0 || len(res.Lines) != 0 {
+		t.Errorf("want 2 scanned / 0 matched, got %+v", res)
+	}
+}
