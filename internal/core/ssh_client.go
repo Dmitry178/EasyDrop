@@ -224,8 +224,19 @@ func (e *SSHExecutor) authMethods() ([]ssh.AuthMethod, error) {
 		methods = append(methods, ssh.PublicKeys(signer))
 	}
 
-	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-		if conn, err := net.Dial("unix", sock); err == nil {
+	// An unreachable SSH_AUTH_SOCK is the single most common surprise when
+	// easydrop runs as a spawned child (an MCP server started by an AI client,
+	// a GUI-launched binary): the variable is often inherited but the agent it
+	// points at is gone or was never reachable from that process. Silently
+	// dropping the method turns that into a bare "no ssh auth methods", so the
+	// reason is remembered and named below.
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	agentErr := error(nil)
+	if sock != "" {
+		conn, err := net.Dial("unix", sock)
+		if err != nil {
+			agentErr = fmt.Errorf("SSH_AUTH_SOCK=%s is set but unreachable (%v)", sock, err)
+		} else {
 			agentClient := agent.NewClient(conn)
 			methods = append(methods, ssh.PublicKeysCallback(agentClient.Signers))
 		}
@@ -236,6 +247,12 @@ func (e *SSHExecutor) authMethods() ([]ssh.AuthMethod, error) {
 	}
 
 	if len(methods) == 0 {
+		if agentErr != nil {
+			return nil, fmt.Errorf("no usable ssh auth method: %w. If easydrop was "+
+				"started by another program (an MCP client), that program must pass "+
+				"SSH_AUTH_SOCK through to its environment; otherwise set "+
+				"server.ssh_key or server.password", agentErr)
+		}
 		return nil, fmt.Errorf("no ssh auth methods: set server.ssh_key, start ssh-agent, or provide server.password")
 	}
 	return methods, nil
@@ -264,7 +281,7 @@ func expandSSHPath(p string) string {
 	return p
 }
 
-// toRemotePath normalizes a destination to forward slashes — the target
+// toRemotePath normalizes a destination to forward slashes – the target
 // is always Linux, even when the CLI runs on Windows/macOS.
 func toRemotePath(p string) string {
 	return path.Clean(strings.ReplaceAll(p, "\\", "/"))
