@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -38,19 +39,24 @@ const (
 	defaultMaxProbes     = 10
 	followPollInterval   = 2 * time.Second
 	followDedupWindow    = 500
+	portCheckAttempts    = 3
 )
+
+// portCheckRetryDelay is the pause between "busy" confirmations. A var so tests
+// can shrink it; production code never assigns it.
+var portCheckRetryDelay = 500 * time.Millisecond
 
 // SingleDriver manages isolated single-container deployments in two modes.
 //
 // Direct mode (BlueGreen=false, default): stop the old container (if any)
-// and start the new one in place on app.host_port — simple, with brief
+// and start the new one in place on app.host_port – simple, with brief
 // downtime.
 //
 // Blue-Green mode (BlueGreen=true, opt-in via `driver.blue_green` or
 // `deploy --blue-green`): zero-downtime swaps on the port pair
 // {app.host_port, app.host_port+1} (host_port defaults to app.port). Green
 // stages on whichever is free; after promotion ingress points at it, and the
-// retired container is kept stopped as [app]-active-previous — the rollback
+// retired container is kept stopped as [app]-active-previous – the rollback
 // backup consumed by Rollback. Containers always listen on app.port
 // internally, so fixed-port images (nginx:80) publish fine.
 //
@@ -141,7 +147,8 @@ func (d *SingleDriver) Deploy(ctx context.Context, app *models.Application) erro
 // deployDirect stops the old container (if any) and starts the new one in
 // place, publishing app.HostPort → app.Port. Brief downtime, no backup kept:
 // probe failure leaves the new container running for inspection and returns
-// an error.
+// an error. The port pre-flight runs after the `docker rm -f`, since that
+// removal is what frees the port on a redeploy.
 func (d *SingleDriver) deployDirect(ctx context.Context, app *models.Application) error {
 	cfg := app.Config
 	name, internalPort := cfg.App.Name, cfg.App.Port
@@ -150,6 +157,9 @@ func (d *SingleDriver) deployDirect(ctx context.Context, app *models.Application
 
 	_, _, _, _ = d.exec.ExecCommand(ctx, "docker rm -f "+q(active))
 
+	if err := d.ensurePortFree(ctx, hostPort); err != nil {
+		return err
+	}
 	run := fmt.Sprintf("docker run -d --name %s -p %d:%d --restart unless-stopped %s",
 		q(active), hostPort, internalPort, q(imageRef(app)))
 	if _, _, _, err := d.exec.ExecCommand(ctx, run); err != nil {
@@ -198,6 +208,14 @@ func (d *SingleDriver) deployBlueGreen(ctx context.Context, app *models.Applicat
 	// Best-effort cleanup of a leftover green from a previous failed deploy.
 	_, _, _, _ = d.exec.ExecCommand(ctx, "docker rm -f "+q(green))
 
+	// Pre-flight before staging. The alternation above only knows which port
+	// *this app* occupies; it cannot see a stranger on host_port+1, and
+	// without this check that stranger surfaces as a bare
+	// "port is already allocated" from `docker run` – after the build has
+	// shipped, with no hint about which port or how to fix it.
+	if err := d.ensurePortFree(ctx, greenPort); err != nil {
+		return err
+	}
 	run := fmt.Sprintf("docker run -d --name %s -p %d:%d --restart unless-stopped %s",
 		q(green), greenPort, internalPort, q(imageRef(app)))
 	if _, _, _, err := d.exec.ExecCommand(ctx, run); err != nil {
@@ -243,7 +261,7 @@ func (d *SingleDriver) updateIngress(ctx context.Context, domain string, port in
 
 // Rollback restores the stopped backup kept by the last Blue-Green deploy:
 // remove the failed active, rename the backup back, start it, probe it.
-// It consumes the backup — a second rollback reports "no backup" until the
+// It consumes the backup – a second rollback reports "no backup" until the
 // next Blue-Green deploy. Probe failure leaves the restored container running
 // and returns an error. Without a backup (direct deploys, fresh hosts) it
 // fails fast with zero host mutations beyond the existence check.
@@ -282,10 +300,143 @@ func (d *SingleDriver) Rollback(ctx context.Context, app *models.Application) er
 		return fmt.Errorf("update ingress after rollback: %w", err)
 	}
 	if err := d.probe(ctx, port, cfg.App.HealthCheckPath, "restored"); err != nil {
-		return err // restored container left running — last resort stays up
+		return err // restored container left running – last resort stays up
 	}
 	d.logf("%s rolled back on host port %d", active, port)
 	return nil
+}
+
+// ensurePortFree fails before a container is started when something on the
+// host already listens on port.
+//
+// Docker's own answer ("port is already allocated") arrives only after the image
+// has been built and shipped, names neither the port nor the squatter, and is
+// indistinguishable from a bug in easydrop. This turns it into an actionable
+// pre-flight failure instead.
+//
+// The check is a probe of the *listening* sockets (`ss`, falling back to
+// `netstat`) rather than an attempt to bind: binding from the SSH session would
+// report the foreign listener correctly but would also fail on a port held by a
+// container we are about to replace, and it needs a writable temp path on a host
+// that may have none. Best-effort by design – a host with neither tool, or one
+// where the probe errors, proceeds to `docker run` and lets Docker be the judge,
+// because a deploy must not fail on a missing diagnostic utility.
+func (d *SingleDriver) ensurePortFree(ctx context.Context, port int) error {
+	// Retried rather than checked once: on a redeploy the port was held by the
+	// container we just removed, and docker's userland proxy can hold the
+	// socket for a moment after the container is gone. Failing on that race
+	// would make every redeploy flaky, so a busy result is confirmed over a
+	// short window before it is believed.
+	var holders []string
+	for attempt := 1; attempt <= portCheckAttempts; attempt++ {
+		found, err := d.portHolders(ctx, port)
+		if err != nil {
+			d.logf("port %d pre-flight skipped: %v", port, err)
+			return nil
+		}
+		if len(found) == 0 {
+			return nil
+		}
+		holders = found
+		if attempt < portCheckAttempts && !sleepCtx(ctx, portCheckRetryDelay) {
+			return nil // cancelled – let the deploy path report it
+		}
+	}
+	return fmt.Errorf("host port %d is already in use by %s – Blue-Green needs the "+
+		"free port of the {host_port, host_port+1} pair: free it, or set "+
+		"app.host_port in easydrop.toml to another base (production untouched)",
+		port, strings.Join(holders, ", "))
+}
+
+// portHolders lists the processes listening on port, best effort. An empty
+// result with a nil error means "nothing found" – including the case where no
+// listing tool exists, which is not a failure.
+func (d *SingleDriver) portHolders(ctx context.Context, port int) ([]string, error) {
+	// `ss -ltnp` is the modern listing; `netstat -ltnp` covers the older
+	// images that ship without iproute2. Both print one row per socket with
+	// the local address as `addr:port`.
+	for _, tool := range []struct{ probe, list string }{
+		{"ss -V", "ss -ltnpH"},
+		{"netstat -V", "netstat -ltnp"},
+	} {
+		if _, _, _, err := d.exec.ExecCommand(ctx, tool.probe); err != nil {
+			continue
+		}
+		out, _, _, err := d.exec.ExecCommand(ctx, tool.list)
+		if err != nil {
+			return nil, err
+		}
+		return matchListeningPort(out, port), nil
+	}
+	return nil, nil // no listing tool – not an error, see ensurePortFree
+}
+
+// matchListeningPort picks the rows whose local address ends in :port. It
+// matches on the address suffix rather than a field index, because the field
+// layout differs between ss and netstat and neither is worth parsing fully –
+// only the local address matters here.
+func matchListeningPort(listing string, port int) []string {
+	suffix := ":" + strconv.Itoa(port)
+	var holders []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(listing, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if !slices.ContainsFunc(fields, func(f string) bool { return strings.HasSuffix(f, suffix) }) {
+			continue
+		}
+		// The process column, when the caller may see it: ss prints
+		// users:(("nginx",pid=811,fd=6)), netstat prints 1234/nginx. Both carry
+		// `pid=`; without it the row is still known to be occupied, just not
+		// attributable, so it is reported as busy with no holder named.
+		holder := pidField(fields)
+		if holder == "" {
+			// Occupied but unattributable: the socket belongs to another user
+			// (a root-owned docker-proxy when easydrop runs unprivileged is the
+			// common case), so `-p` cannot name it. Saying "occupied" is the
+			// actionable part; inventing an owner would not be.
+			holder = "a process whose owner this user cannot see"
+		}
+		if seen[holder] {
+			continue
+		}
+		seen[holder] = true
+		holders = append(holders, holder)
+	}
+	return holders
+}
+
+// pidField extracts an owner identifier from a socket-listing row. The two
+// tools format it differently – ss prints `users:(("nginx",pid=811,fd=6))`,
+// netstat `1234/nginx` – so both shapes are recognized and normalized to
+// `pid=N`. Returns "" when the row carries no owner, which happens whenever the
+// socket belongs to another user: the port is still occupied, just not ours to
+// name.
+func pidField(fields []string) string {
+	for _, f := range fields {
+		if open := strings.Index(f, "pid="); open >= 0 {
+			rest := f[open+len("pid="):]
+			if end := strings.IndexAny(rest, ",)"); end >= 0 {
+				rest = rest[:end]
+			}
+			if rest != "" {
+				return "pid=" + rest
+			}
+		}
+	}
+	// netstat: a `PID/NAME` column, e.g. `1234/nginx`.
+	for _, f := range fields {
+		num, name, ok := strings.Cut(f, "/")
+		if !ok || name == "" {
+			continue
+		}
+		if _, err := strconv.Atoi(num); err == nil {
+			return "pid=" + num
+		}
+	}
+	return ""
 }
 
 // containerHostPort returns the published host port of containerName for the
@@ -294,7 +445,7 @@ func (d *SingleDriver) containerHostPort(ctx context.Context, containerName stri
 	out, _, _, err := d.exec.ExecCommand(ctx,
 		"docker inspect -f '{{range $p, $c := .NetworkSettings.Ports}}{{if $c}}{{(index $c 0).HostPort}} {{end}}{{end}}' "+q(containerName))
 	if err != nil {
-		return 0, nil // container does not exist — first deploy
+		return 0, nil // container does not exist – first deploy
 	}
 	for _, field := range strings.Fields(out) {
 		if port, perr := strconv.Atoi(field); perr == nil {
@@ -345,7 +496,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 
 // Status inspects the active container: running → Up, restarting →
 // Restarting, anything else (or missing) → Down. Uptime comes from
-// `docker ps` RunningFor. SSLStatus is left empty — the ingress layer (M6)
+// `docker ps` RunningFor. SSLStatus is left empty – the ingress layer (M6)
 // enriches it once certificates are managed.
 func (d *SingleDriver) Status(ctx context.Context, appName string) (*models.AppStatus, error) {
 	if err := models.ValidateAppName(appName); err != nil {
@@ -379,7 +530,7 @@ func (d *SingleDriver) Status(ctx context.Context, appName string) (*models.AppS
 // Logs streams `docker logs` output. With follow=false it emits --tail lines
 // and closes the channel. With follow=true it emits the tail snapshot, then
 // polls every 2s emitting only unseen lines (dedup window of the last 500)
-// until ctx is cancelled — polling stays ctx-aware on both local and SSH
+// until ctx is cancelled – polling stays ctx-aware on both local and SSH
 // executors, where a blocking `docker logs -f` session could not be stopped.
 func (d *SingleDriver) Logs(ctx context.Context, appName string, lines int, follow bool) (<-chan string, error) {
 	if err := models.ValidateAppName(appName); err != nil {
@@ -398,7 +549,7 @@ func (d *SingleDriver) Logs(ctx context.Context, appName string, lines int, foll
 }
 
 // Teardown force-removes active, any leftover green, and the rollback backup.
-// Missing containers are not an error — teardown is idempotent.
+// Missing containers are not an error – teardown is idempotent.
 func (d *SingleDriver) Teardown(ctx context.Context, appName string) error {
 	if err := models.ValidateAppName(appName); err != nil {
 		return err
