@@ -29,10 +29,20 @@ type queueFake struct {
 type qr struct {
 	prefix string
 	queue  []resp
+	// steady replays the last queued response instead of erroring when the
+	// queue drains (see onSteady).
+	steady bool
 }
 
 func (f *queueFake) on(prefix string, rs ...resp) {
 	f.rules = append(f.rules, &qr{prefix: prefix, queue: rs})
+}
+
+// onSteady answers every call with the same response. The port pre-flight polls
+// a fixed number of times, and a queue would run dry and turn the exhaustion
+// into a spurious "probe failed" skip.
+func (f *queueFake) onSteady(prefix string, r resp) {
+	f.rules = append(f.rules, &qr{prefix: prefix, queue: []resp{r}, steady: true})
 }
 
 func (f *queueFake) ExecCommand(_ context.Context, cmd string) (string, string, int, error) {
@@ -40,10 +50,15 @@ func (f *queueFake) ExecCommand(_ context.Context, cmd string) (string, string, 
 	for _, r := range f.rules {
 		if strings.HasPrefix(cmd, r.prefix) {
 			if len(r.queue) == 0 {
-				return "", "", -1, fmt.Errorf("fake: no more responses for %q", cmd)
+				if !r.steady {
+					return "", "", -1, fmt.Errorf("fake: no more responses for %q", cmd)
+				}
+				return "", "", -1, fmt.Errorf("fake: no responses configured for %q", cmd)
 			}
 			res := r.queue[0]
-			r.queue = r.queue[1:]
+			if len(r.queue) > 1 || !r.steady {
+				r.queue = r.queue[1:]
+			}
 			if res.err != nil {
 				return res.stdout, "", 1, res.err
 			}
@@ -373,7 +388,7 @@ func TestDeployDirectProbeFailureKeepsContainer(t *testing.T) {
 	if err := d.Deploy(context.Background(), singleApp("")); err == nil {
 		t.Fatalf("Deploy() expected healthcheck error, got nil")
 	}
-	// Only the pre-cleanup removal may run — the failed container stays
+	// Only the pre-cleanup removal may run – the failed container stays
 	// for inspection.
 	if got := countCalls(f.calls, "docker rm -f 'my-api-active'"); got != 1 {
 		t.Errorf("failed direct container must be kept, rm ran %d times", got)
@@ -546,5 +561,167 @@ func TestImageRefFallsBackToRemoteDefault(t *testing.T) {
 	app.Image = "registry.example.com:5000/team/web:1.2"
 	if got := imageRef(app); got != app.Image {
 		t.Errorf("imageRef() = %q, want %q", got, app.Image)
+	}
+}
+
+// busyListing renders an `ss -ltnpH` row for a process squatting on port. The
+// pre-flight confirms a "busy" verdict up to portCheckAttempts times, so the
+// fake must be able to answer every attempt.
+func busyListing(port int, name string, pid int) resp {
+	return okResp(fmt.Sprintf("tcp LISTEN 0 4096 0.0.0.0:%d 0.0.0.0:* users:((\"%s\",pid=%d,fd=3))",
+		port, name, pid))
+}
+
+// shrinkPortCheckRetry removes the pre-flight confirmation pause so the port
+// tests do not spend seconds sleeping.
+func shrinkPortCheckRetry(t *testing.T) {
+	t.Helper()
+	orig := portCheckRetryDelay
+	portCheckRetryDelay = time.Millisecond
+	t.Cleanup(func() { portCheckRetryDelay = orig })
+}
+
+func TestMatchListeningPort(t *testing.T) {
+	const ssListing = `tcp   LISTEN 0      4096   0.0.0.0:8080       0.0.0.0:*    users:(("nginx",pid=811,fd=6))
+tcp   LISTEN 0      4096   127.0.0.1:5432    0.0.0.0:*    users:(("postgres",pid=900,fd=5))
+tcp   LISTEN 0      4096   [::]:8080          [::]:*       users:(("docker-pr",pid=42,fd=3))
+tcp   LISTEN 0      4096   127.0.0.1:8080     0.0.0.0:*    users:(("sshd",pid=77,fd=4))`
+	for _, tc := range []struct {
+		port int
+		want []string
+	}{
+		{8080, []string{`pid=811`, `pid=42`, `pid=77`}},
+		{5432, []string{`pid=900`}},
+		{9999, nil},
+	} {
+		got := matchListeningPort(ssListing, tc.port)
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("port %d: got %v, want %v", tc.port, got, tc.want)
+		}
+	}
+	// No -p column (another user's socket): still reported as occupied, just
+	// without a pid to name.
+	if got := matchListeningPort("tcp LISTEN 0 4096 0.0.0.0:8080 0.0.0.0:*", 8080); len(got) != 1 {
+		t.Errorf("unattributable row must still count as occupied: %v", got)
+	}
+	// The netstat shape normalizes to the same `pid=N` form.
+	if got := matchListeningPort("tcp 0 0 0.0.0.0:8081 0.0.0.0:* LISTEN 1234/nginx", 8081); len(got) != 1 || got[0] != "pid=1234" {
+		t.Errorf("netstat PID/NAME column: got %v", got)
+	}
+}
+
+func TestEnsurePortFreePassesWhenFree(t *testing.T) {
+	f := &queueFake{}
+	f.onSteady("ss -V", okResp(""))
+	f.on("ss -ltnpH", okResp("tcp LISTEN 0 4096 127.0.0.1:5432 0.0.0.0:*"))
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	if err := d.ensurePortFree(context.Background(), 8080); err != nil {
+		t.Errorf("free port must pass, got: %v", err)
+	}
+}
+
+func TestEnsurePortFreeFailsWithActionableError(t *testing.T) {
+	shrinkPortCheckRetry(t)
+	f := &queueFake{}
+	f.onSteady("ss -V", okResp(""))
+	f.onSteady("ss -ltnpH", busyListing(8081, "other-app", 1234))
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	err := d.ensurePortFree(context.Background(), 8081)
+	if err == nil {
+		t.Fatal("busy port must fail the pre-flight")
+	}
+	for _, want := range []string{"8081", "pid=1234", "app.host_port"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must mention %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestEnsurePortFreeIgnoresToolFailure(t *testing.T) {
+	shrinkPortCheckRetry(t)
+	// Neither ss nor netstat exists: the deploy must proceed and let Docker be
+	// the judge, rather than failing on a missing diagnostic utility.
+	f := &queueFake{}
+	f.on("ss -V", errResp())
+	f.on("netstat -V", errResp())
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	if err := d.ensurePortFree(context.Background(), 8080); err != nil {
+		t.Errorf("missing listing tools must not fail the deploy, got: %v", err)
+	}
+}
+
+func TestEnsurePortFreeRetriesTransientOccupancy(t *testing.T) {
+	shrinkPortCheckRetry(t)
+	// The container we just replaced held the port a moment ago; a single
+	// busy listing is not enough to call it occupied.
+	f := &queueFake{}
+	f.onSteady("ss -V", okResp(""))
+	f.on("ss -ltnpH", busyListing(8080, "docker-pr", 5), okResp(""), okResp(""), okResp(""))
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	if err := d.ensurePortFree(context.Background(), 8080); err != nil {
+		t.Errorf("a port that frees up mid-check must not fail the deploy, got: %v", err)
+	}
+}
+
+func TestEnsurePortFreeFallsBackToNetstat(t *testing.T) {
+	shrinkPortCheckRetry(t)
+	f := &queueFake{}
+	f.on("ss -V", errResp())
+	f.onSteady("netstat -V", okResp(""))
+	f.onSteady("netstat -ltnp", okResp(`tcp 0 0 0.0.0.0:8081 0.0.0.0:* LISTEN 1234/first-app`))
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	err := d.ensurePortFree(context.Background(), 8081)
+	if err == nil || !strings.Contains(err.Error(), "8081") {
+		t.Errorf("netstat holder must be detected, got: %v", err)
+	}
+}
+
+func TestDeployBlueGreenFailsFastOnBusyGreenPort(t *testing.T) {
+	shrinkPortCheckRetry(t)
+	f := &queueFake{}
+	f.on("docker info", okResp(""))
+	f.on(inspectPrefix, okResp("8080 "))
+	f.on("docker rm -f 'my-api-green'", okResp(""))
+	f.onSteady("ss -V", okResp(""))
+	f.onSteady("ss -ltnpH", busyListing(8081, "postgres", 900))
+	d := NewSingleDriver(f)
+	d.BlueGreen = true
+	d.Out = &bytes.Buffer{}
+	err := d.Deploy(context.Background(), singleApp("example.com"))
+	if err == nil {
+		t.Fatal("busy green port must fail the deploy")
+	}
+	if !strings.Contains(err.Error(), "8081") {
+		t.Errorf("error must name the busy port, got: %v", err)
+	}
+	// The point of the pre-flight: nothing was staged and production stands.
+	if f.ran("docker run -d --name 'my-api-green'") {
+		t.Errorf("green must not be started on a busy port, ran: %v", f.calls)
+	}
+	if f.ran("docker stop 'my-api-active'") {
+		t.Errorf("production must be untouched, ran: %v", f.calls)
+	}
+}
+
+func TestDeployDirectFailsFastOnBusyHostPort(t *testing.T) {
+	shrinkPortCheckRetry(t)
+	f := &queueFake{}
+	f.on("docker info", okResp(""))
+	f.on("docker rm -f 'my-api-active'", okResp(""))
+	f.onSteady("ss -V", okResp(""))
+	f.onSteady("ss -ltnpH", busyListing(8080, "other", 7))
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	err := d.Deploy(context.Background(), singleApp(""))
+	if err == nil {
+		t.Fatal("busy host port must fail the deploy")
+	}
+	if f.ran("docker run") {
+		t.Errorf("no container may be started on a busy port, ran: %v", f.calls)
 	}
 }
