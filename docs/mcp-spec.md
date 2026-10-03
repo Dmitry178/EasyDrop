@@ -8,6 +8,28 @@ Single binary, no separate `easydrop-mcp` executable.
 
 AI assistants invoke these structured primitives to safely manage infrastructure configurations. The underlying MCP server pipes these method parameters directly into targeted execution routines within the `internal/core` logic layer.
 
+### 1.0. Tool annotations (M16, locked)
+Every tool declares `annotations` explicitly (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, `title`). The protocol defaults are `readOnly=false, destructive=true` – leaving them unset would misdescribe `get_status`/`get_logs` as mutating, which is exactly the signal a client uses to decide whether it may answer a question without asking the user first.
+
+| Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` |
+|------|----------------|-------------------|------------------|
+| `init_project` | `false` | `true` | `true` |
+| `deploy_app` | `false` | `false` | `true` |
+| `get_status` | `true` | – (omitted: meaningless when read-only) | – |
+| `get_logs` | `true` | – | – |
+| `rollback_app` | `false` | `true` | `false` |
+| `teardown_app` | `false` | `true` | `true` |
+| `manage_server` | `false` | `true` | `true` |
+
+Notes on the non-obvious rows:
+- **`deploy_app` is not destructive.** It replaces the running container but keeps a rollback backup under Blue-Green and never deletes data, so it is additive. It is still not free (minutes of wall clock, previous image dropped) – the description says so.
+- **`rollback_app` is not idempotent.** It *consumes* the single backup; a second call fails until the next replacing deploy. Marking it idempotent would let a client retry it blindly.
+- **`init_project` is destructive** because `force=true` regenerates the file from scratch and discards hand edits. Without `force` it is a no-op on an existing file.
+- **`manage_server` is destructive** in the local store sense: `remove` forgets the credentials for a host, recoverable only by re-entering them.
+- **`destructiveHint` is omitted on the read-only tools** – the spec scopes it to `readOnlyHint == false`, so a `false` there is noise.
+- Every destructive tool's **description tells the agent to confirm with the user**. The hint alone does not stop a model, and the description is what it actually reads. Covered by a test over a real session.
+- These hints are **not a security boundary** – per the MCP spec, clients must not make authorization decisions from annotations received from a server.
+
 ### 1.1. `init_project`
 - **Description:** Scan the project and generate `easydrop.toml`: detect the listen port (Dockerfile `EXPOSE`/`CMD`, compose ports, an explicit `--port` flag, `PORT=` in `.env`, framework conventions, or a bounded look at the project's own source), the stack, and the driver. Nothing is guessed – when no port can be found, `[app].port` is left unset and `deploy_app` fails until you set it, so either resolve it by reading the code or pass the port via the `port` argument.
 - **Detection (M14, FR-02/FR-02B):** identical rules to CLI `init` (see `docs/cli-spec.md` §1.1). The result names the **source** of every detected value, and when no port is found the key is simply absent (OD-04) – `deploy_app` then fails with an actionable message instead of deploying a guess.
@@ -30,11 +52,17 @@ AI assistants invoke these structured primitives to safely manage infrastructure
   - `app_name` (string, required): Target application name metadata identifier used to extract landscape scopes.
 
 ### 1.4. `get_logs`
-- **Description:** Reads current remote stdout/stderr application output streams for immediate debugging or error root-cause diagnostics. Backed by `Logs(ctx, appName, lines, follow)` – MCP collects the channel to a list (streaming `follow` is supported; the server closes the stream on client cancel).
+- **Description:** Reads current remote stdout/stderr application output streams for immediate debugging or error root-cause diagnostics. Backed by `deploy.Logs(ctx, appName, LogOptions)` over the driver's `Logs(ctx, appName, lines, follow)` channel – MCP collects the channel to a list (streaming `follow` is supported; the server closes the stream on client cancel).
+- **Log filtering (M16):** `filter` is a **case-insensitive regular expression** applied to the collected lines, and it exists for the agent's benefit, not the human's: an unfiltered snapshot lands verbatim in the context window, so "stream the logs and tell me why the database container is failing" is answered with 2000 lines of noise. Three supporting rules make the result unambiguous rather than merely smaller:
+  - **A filtered read scans a wider window.** With `tail` omitted, `filter` set raises the default from 50 to 1000 lines. A narrow window returns "0 matched", which a model reads as "no errors" rather than "look further back".
+  - **An invalid expression is an error result** (`isError`, naming the bad pattern), never a filter that silently passes everything through – the latter would be indistinguishable from a healthy container.
+  - **Counts are reported.** `scanned` and `matched` accompany `lines`, and an empty read returns an explanatory line (`no log lines available` vs `no lines matched (scanned N lines …)`) instead of an empty string.
+- **Output bound:** `follow` collection is capped at 2000 kept lines (`followLogCap`); the text payload is additionally truncated at 400 matched lines with an explicit `[easydrop] output truncated: …` marker, so a long stream cannot silently truncate. (Mirrors CLI `logs -g`.)
 - **Arguments:**
   - `app_name` (string, required): Targeted application name identifier.
-  - `tail` (integer, optional): Total lines of log context history to retrieve. Defaults to 50.
+  - `tail` (integer, optional): Lines of history to **scan**, not to return. Defaults to 50, or 1000 when `filter` is set.
   - `follow` (boolean, optional): Keep streaming new lines (mirrors CLI `logs --follow`). Defaults to `false`.
+  - `filter` (string, optional): Case-insensitive regular expression; only matching lines are returned. E.g. `"error|panic|fatal|traceback"`. Defaults to empty (no filtering).
 
 ### 1.5. `rollback_app`
 - **Description:** Restores the stopped backup kept by the last Blue-Green deploy (mirrors CLI `rollback`). Backed by `Rollback(ctx, app)`. Fails fast with "no rollback backup" when no backup exists – without touching anything.
@@ -66,7 +94,7 @@ The protocol maps contextual state metrics allowing connected LLM instances to a
 | `init_project` | config scaffolding (Milestone 7, FR-02; detection M14, shared report + `port` override M15) |
 | `deploy_app` | `Bootstrapper.Bootstrap` → builder `Build(ctx, app)` → `SingleDriver.Deploy(ctx, app)` → Nginx/Certbot |
 | `get_status` | `SingleDriver.Status(ctx, appName)` |
-| `get_logs` | `SingleDriver.Logs(ctx, appName, lines, follow)` |
+| `get_logs` | `deploy.Logs(ctx, appName, LogOptions)` → `SingleDriver.Logs(ctx, appName, lines, follow)` + `collectLogs` filter (M16) |
 | `rollback_app` | `SingleDriver.Rollback(ctx, app)` |
 | `teardown_app` | `Teardown(ctx, appName)` on the configured driver |
 | `manage_server` | encrypted vault (`~/.easydrop/servers.vault`, scrypt + AES-256-GCM) |
