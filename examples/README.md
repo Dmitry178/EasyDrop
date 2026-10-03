@@ -284,6 +284,14 @@ agent → password). This is also the only way to use a passphrase-protected key
 since encrypted private keys cannot be parsed directly. See
 [`04-remote-ssh-password.toml`](04-remote-ssh-password.toml).
 
+The agent socket is an environment variable, and an MCP server is a *spawned
+child*: an AI client may start it without `SSH_AUTH_SOCK`, or with it pointing at
+an agent the child cannot reach. `easydrop deploy` in your terminal then works
+while the same deploy through the assistant does not. EasyDrop names that case
+explicitly (`SSH_AUTH_SOCK=… is set but unreachable`) instead of reporting a bare
+"no ssh auth methods". Outside MCP, prefer option A below when you can – a key
+path in the config needs no environment at all.
+
 **B. Interpolate from a secret file** – see
 [`20-secrets-from-env.toml`](20-secrets-from-env.toml):
 
@@ -365,6 +373,13 @@ These fail fast, with a message naming the field:
 * `build.strategy = "local"` without `build.registry` fails when the build
   starts; a registry containing `://` is rejected.
 
+Beyond the config itself, the host is checked before a container is started:
+a Blue-Green deploy needs the *free* port of the `{host_port, host_port+1}`
+pair, and a squatter on it (an unrelated container, a leftover `*-green`, any
+other process) fails the deploy with the port and the owner named – production
+keeps serving. The check uses `ss` or `netstat` on the target and is skipped
+with a note when neither exists.
+
 ## Environment variables
 
 None of these belong in `easydrop.toml` – they are machine-level settings.
@@ -374,7 +389,7 @@ None of these belong in `easydrop.toml` – they are machine-level settings.
 | `EASYDROP_STAGING_BASE` | `/tmp/easydrop` | host staging root for uploaded workspaces and rendered Nginx configs |
 | `EASYDROP_VAULT_PASSWORD` | – | unlocks the server vault; required for `manage_server`, no prompt, fails closed |
 | `EASYDROP_SERVERS_FILE` | `~/.easydrop/servers.vault` | vault location |
-| `SSH_AUTH_SOCK` | – | standard ssh-agent socket; when set, the agent is tried after the key file |
+| `SSH_AUTH_SOCK` | – | standard ssh-agent socket; when set, the agent is tried after the key file. A set-but-unreachable socket is reported by name – the usual case is an MCP server spawned by an AI client with a minimal environment |
 
 `${VAR}` references in the config resolve against the real environment first and
 the `.env` / `.easydrop.env` files in the config's directory after that – see
