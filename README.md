@@ -332,6 +332,81 @@ Once connected, ask your assistant things like:
 > *"Deploy the current project to my server"*
 > *"Stream the logs and let me know why the database container is failing"*
 
+Every tool declares its behaviour through standard MCP tool annotations:
+`get_status` and `get_logs` are marked read-only, while `rollback_app`,
+`teardown_app`, `init_project {force:true}` and `manage_server` are marked
+destructive. Clients that support confirmation use these to ask you before
+acting, so the assistant can answer questions about your server without
+touching it. Diagnosing a failing container is usually just
+`get_status`, then `get_logs` with a filter:
+
+```json
+{"app_name": "my-api", "tail": 1000, "filter": "error|panic|fatal|traceback"}
+```
+
+The filter is a case-insensitive regular expression applied to the lines the
+container produced; the result reports how many lines were scanned and how many
+matched, so "0 matched" is never confused with "the container logged nothing".
+
+---
+
+## Scope and Limitations
+
+EasyDrop is a **single-host deployment tool**, not an orchestrator. Knowing
+where the edge is saves you from reaching for it in the wrong situation.
+
+**A good fit**
+
+*   One or a handful of apps on one server you already own (VPS, bare metal,
+    Raspberry Pi).
+*   MVP and pet projects, small production services, staging environments.
+*   Replacing a hand-rolled `docker build && docker run && edit nginx.conf`
+    script with something scripted, repeatable and AI-drivable.
+*   Teams that want a Railway/Fly.io-style workflow on their own hardware, with
+    the whole deployment in git.
+
+**Not a fit** – reach for Kubernetes, Nomad, ECS or plain systemd units instead
+
+*   Multi-node scheduling, replica autoscaling, rolling updates across hosts, or
+    any cross-node failover. One `easydrop.toml` is one app on one host.
+*   High availability. EasyDrop runs one app container behind Nginx on a single
+    machine; if the machine is down, the app is down.
+*   Canary or percentage traffic splitting, feature flags, or serving several
+    versions of the same app at once.
+
+**Hard limits, worth knowing before you rely on it**
+
+*   **Zero-downtime is one release deep.** A Blue-Green deploy stages a second
+    container on the `{host_port, host_port+1}` pair, health-checks it and flips
+    the proxy. Both ports must be free (`app.host_port` is therefore capped at
+    65534), there is no traffic splitting, and the previous release is kept as
+    exactly one backup – the next Blue-Green deploy discards it. `rollback_app`
+    consumes that backup and cannot be repeated.
+*   **Direct deploys** (the default) restart the container in place: brief
+    downtime, no backup, no rollback.
+*   **Health checks are HTTP only.** `app.health_check_path` must answer `200`
+    from inside the container. There are no TCP, command or exec-style checks.
+*   **TLS is Let's Encrypt over HTTP-01 only.** The domain must resolve publicly
+    and port 80 must be reachable. There is no DNS-01 challenge, no wildcard
+    handling and no self-signed certificate generation – with a localhost target
+    `nginx.ssl` is a no-op. EasyDrop writes a plain HTTP vhost and lets
+    `certbot --nginx` add the TLS block; renewal afterwards is certbot's own
+    timer, not something EasyDrop schedules.
+*   **nginx and certbot must already be installed** on the target. Bootstrapping
+    installs Docker Engine, Docker Compose and the firewall rules – not the web
+    server.
+*   **Data is never backed up or migrated.** `teardown_app` deliberately keeps
+    named volumes, but nothing here snapshots, replicates or restores a database.
+*   **Logs live in the Docker daemon.** `logs` / `get_logs` read them live with
+    a tail bound and a filter; there is no shipping, retention or search. Pair it
+    with your own log agent if you need history.
+*   **There is no secrets manager.** `${VAR}` interpolation pulls values from the
+    environment or a git-ignored `.easydrop.env`, but a literal
+    `server.password` in the config is a secret in your repository.
+*   **Targets are Debian and Ubuntu**, on Docker Engine – no rootless Podman, no
+    other container runtimes. A snap-confined Docker daemon is rejected with an
+    explicit error (see the note in [Development](#development)).
+
 ---
 
 ## Project Documentation Structure
