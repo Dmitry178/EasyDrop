@@ -50,10 +50,11 @@ Queries and displays the active system metrics and health landscapes of the depl
 
 ### 1.4. `easydrop logs [app_name]`
 Streams operational container output channels directly into the terminal interface.
-- **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `Logs(ctx, appName, lines, follow)` – `lines` = `--tail`, `follow` = `--follow`.
+- **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `deploy.Logs(ctx, appName, LogOptions)` over the driver's `Logs(ctx, appName, lines, follow)` – `lines` = `--tail`, `follow` = `--follow`, and the core does the filtering (M16), so the CLI and `get_logs` cannot drift.
 - **Flags:**
   - `-f, --follow`: Stream live stdout/stderr data logs from the remote host environment in real time (equivalent to `tail -f`).
-  - `-n, --tail int`: Number of historical trace log lines to render upon initial attachment (defaults to 100).
+  - `-n, --tail int`: Number of historical trace log lines to **scan** upon initial attachment (defaults to 100).
+  - `-g, --grep string`: Case-insensitive regular expression; print only matching lines (e.g. `-g 'error|panic|fatal'`) (M16). An invalid expression fails the command – it never degrades into an unfiltered dump. When nothing matches, the reason is printed to stderr (`no lines matched (scanned N lines …)` vs `no log lines available`), because an empty result is otherwise ambiguous.
 
 ### 1.5. `easydrop rollback [app_name]`
 Restores the stopped backup kept by the last Blue-Green deploy.
