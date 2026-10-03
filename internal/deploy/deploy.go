@@ -274,15 +274,24 @@ func Teardown(ctx context.Context, configPath, appName string) error {
 	return drv.Teardown(ctx, name)
 }
 
-// Init scaffolds easydrop.toml in dir from its contents. The result carries
-// the detected values and their sources (M14) so the caller – CLI or MCP – can
-// report what was detected instead of a bare "done".
-func Init(dir string, force bool) (*config.ScaffoldResult, error) {
-	res, err := config.Scaffold(dir)
+// InitOptions carries the `init` inputs both interfaces share.
+type InitOptions struct {
+	// Force overwrites an existing easydrop.toml. Without it, Init refuses to
+	// touch the file.
+	Force bool
+	// Port, when non-zero, overrides detection (OD-04).
+	Port int
+}
+
+// Init scaffolds easydrop.toml in dir from its contents. The result carries the
+// detected values, their sources and the shared Report() text, so the CLI and
+// the MCP server present the very same outcome.
+func Init(dir string, opts InitOptions) (*config.ScaffoldResult, error) {
+	res, err := config.ScaffoldWith(dir, config.ScaffoldOptions{Port: opts.Port})
 	if err != nil {
 		return nil, err
 	}
-	if err := config.WriteConfig(filepath.Join(dir, "easydrop.toml"), res.Config, force); err != nil {
+	if err := config.WriteConfig(filepath.Join(dir, "easydrop.toml"), res.Config, opts.Force); err != nil {
 		return nil, err
 	}
 	return res, nil
