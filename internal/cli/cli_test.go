@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestRootHasAllCommands(t *testing.T) {
@@ -77,5 +79,50 @@ func TestInitCommandEndToEnd(t *testing.T) {
 	root.SetArgs([]string{"init", "--force", "--port", "70000"})
 	if err := root.Execute(); err == nil {
 		t.Errorf("--port 70000 must fail")
+	}
+}
+
+// TestLogsFlagsWired checks the `logs` command exposes the filter flag the
+// MCP `get_logs` tool has, so the two interfaces stay in parity.
+func TestLogsFlagsWired(t *testing.T) {
+	var logs *cobra.Command
+	for _, c := range rootCmd().Commands() {
+		if c.Name() == "logs" {
+			logs = c
+		}
+	}
+	if logs == nil {
+		t.Fatal("logs command missing")
+	}
+	for name, def := range map[string]string{"tail": "100", "grep": ""} {
+		f := logs.Flags().Lookup(name)
+		if f == nil {
+			t.Errorf("logs missing --%s", name)
+			continue
+		}
+		if f.DefValue != def {
+			t.Errorf("--%s default = %q, want %q", name, f.DefValue, def)
+		}
+	}
+	if f := logs.Flags().Lookup("grep"); f != nil && f.Usage == "" {
+		t.Errorf("--grep needs a usage string (it takes a regexp)")
+	}
+}
+
+// TestLogsInvalidGrepFails runs the command for real: an unusable expression
+// must be a non-zero exit, never a silently unfiltered dump.
+func TestLogsInvalidGrepFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "easydrop.toml"),
+		[]byte("[app]\nname = \"my-api\"\nport = 8080\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	root := rootCmd()
+	root.SetArgs([]string{"logs", "--grep", "error("})
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	if err := root.Execute(); err == nil {
+		t.Fatalf("invalid --grep must fail the command")
 	}
 }
