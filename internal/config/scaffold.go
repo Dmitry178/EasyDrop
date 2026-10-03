@@ -52,7 +52,7 @@ func Scaffold(dir string) (*ScaffoldResult, error) {
 // detection does and, importantly, for what it refuses to do.
 //
 // Detection (M14) reads the Dockerfile, the compose file, package.json, the
-// language manifests and — as a bounded last resort — the project's own source
+// language manifests and – as a bounded last resort – the project's own source
 // for a literal listen port. It never touches anything outside dir and never
 // contacts a host: no SSH, no Docker, no network.
 //
