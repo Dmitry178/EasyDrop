@@ -15,7 +15,7 @@ import (
 func NewServer() *sdk.Server {
 	s := sdk.NewServer(&sdk.Implementation{Name: "easydrop", Version: version.Version}, nil)
 
-	sdk.AddTool(s, &sdk.Tool{Name: "init_project", Description: "Scan the project directory and generate easydrop.toml"}, handleInit)
+	sdk.AddTool(s, &sdk.Tool{Name: "init_project", Description: "Scan the project and generate easydrop.toml: detects the listen port (Dockerfile EXPOSE, compose ports, --port flag, PORT= in .env, framework conventions, or the project's own source), the stack, and the driver. Nothing is guessed — when no port can be found, [app].port is left unset and deploy_app fails until you set it, so resolve it by reading the code or pass the port via this tool's `port` argument. The result states the source of every detected value."}, handleInit)
 	sdk.AddTool(s, &sdk.Tool{Name: "deploy_app", Description: "Build and deploy the app to the target host (bootstrap, build, Blue-Green/single swap, ingress, SSL)"}, handleDeploy)
 	sdk.AddTool(s, &sdk.Tool{Name: "get_status", Description: "Show the deployed app status"}, handleStatus)
 	sdk.AddTool(s, &sdk.Tool{Name: "get_logs", Description: "Read container logs (snapshot or follow)"}, handleLogs)

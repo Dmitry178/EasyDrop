@@ -34,23 +34,44 @@ func (r *ScaffoldResult) PortMissing() bool {
 	return r != nil && r.PortSource == PortSourceUnknown
 }
 
-// Scaffold scans dir and builds a pre-filled Config.
+// ScaffoldOptions overrides what detection decides.
+type ScaffoldOptions struct {
+	// Port, when non-zero, is used verbatim and outranks every detection
+	// source. It is the supported escape hatch for the case detection cannot
+	// cover (OD-04): the caller knows the port, or was told, and rather than
+	// having it invented into the config. 0 means "detect".
+	Port int
+}
+
+// Scaffold scans dir and builds a pre-filled Config, detecting everything.
+func Scaffold(dir string) (*ScaffoldResult, error) {
+	return ScaffoldWith(dir, ScaffoldOptions{})
+}
+
+// ScaffoldWith is Scaffold with explicit overrides. See Scaffold for what
+// detection does and, importantly, for what it refuses to do.
 //
 // Detection (M14) reads the Dockerfile, the compose file, package.json, the
-// language manifests and – as a bounded last resort – the project's own source
+// language manifests and — as a bounded last resort — the project's own source
 // for a literal listen port. It never touches anything outside dir and never
 // contacts a host: no SSH, no Docker, no network.
 //
-// When no port is detected, `app.port` stays 0 and is omitted from the written
-// file. It is NOT defaulted to 8080: see PortMissing.
-func Scaffold(dir string) (*ScaffoldResult, error) {
+// When no port is detected and none is supplied, `app.port` stays 0 and is
+// omitted from the written file. It is NOT defaulted to 8080: see PortMissing.
+func ScaffoldWith(dir string, opts ScaffoldOptions) (*ScaffoldResult, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve dir %q: %w", dir, err)
 	}
+	if opts.Port != 0 && !validPort(opts.Port) {
+		return nil, fmt.Errorf("validation error: port must be 1-65535, got %d", opts.Port)
+	}
 
 	driver, composeFile := detectDriver(abs)
 	port, portSource := detectPort(abs, driver, composeFile)
+	if opts.Port != 0 {
+		port, portSource = opts.Port, PortSourceOverride
+	}
 	name, nameSource := detectAppName(abs, filepath.Base(abs))
 
 	cfg := &models.Config{

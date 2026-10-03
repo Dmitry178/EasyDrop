@@ -17,32 +17,20 @@ const defaultConfigPath = "./easydrop.toml"
 const followLogCap = 2000
 
 type initInput struct {
-	Force bool `json:"force,omitempty" jsonschema:"overwrite an existing easydrop.toml"`
+	Force bool `json:"force,omitempty" jsonschema:"overwrite an existing easydrop.toml (regenerates it from scratch, discarding hand edits)"`
+	Port  int  `json:"port,omitempty" jsonschema:"the port the app listens on INSIDE the container; overrides detection. Omit to detect it — when nothing in the project states it, easydrop writes no port and deploy_app fails until one is set"`
 }
 
 func handleInit(ctx context.Context, _ *sdk.CallToolRequest, in initInput) (*sdk.CallToolResult, textOut, error) {
 	_ = ctx
-	res, err := deploy.Init(".", in.Force)
+	res, err := deploy.Init(".", deploy.InitOptions{Force: in.Force, Port: in.Port})
 	if err != nil {
 		return errResult(fmt.Sprintf("init failed: %v", err))
 	}
-	msg := fmt.Sprintf("wrote easydrop.toml: app=%s (%s), driver=%s",
-		res.App.Name, res.AppNameSource, res.Driver.Type)
-	if res.PortMissing() {
-		// An agent must never proceed to deploy with a port it invented: for the
-		// single driver the deploy fails at the healthcheck, and for
-		// compose/swarm it succeeds and leaves a 502 proxy behind.
-		msg += fmt.Sprintf(". ACTION REQUIRED: [app].port is NOT SET and was deliberately not " +
-			"guessed – nothing in the project states the port. Ask the user for the port the app " +
-			"listens on INSIDE the container, set it, and only then deploy")
-	} else {
-		msg += fmt.Sprintf(", port=%d (%s)", res.App.Port, res.PortSource)
-	}
-	if res.Stack != "" {
-		msg += fmt.Sprintf(", stack=%s", res.Stack)
-	}
-	msg += ". [server].host is \"localhost\"; set it to the target host before deploying"
-	return okResult(msg)
+	// The same Report() the CLI prints. An agent must not receive a weaker
+	// description of the outcome than a human does — the port-missing case in
+	// particular has to reach it with the method, not just the prohibition.
+	return okResult(strings.TrimRight(res.Report(), "\n"))
 }
 
 type deployInput struct {
