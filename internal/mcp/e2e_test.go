@@ -162,3 +162,113 @@ func TestE2ETeardownWithoutConfigIsError(t *testing.T) {
 		t.Errorf("teardown without config must yield IsError, got %s", toolText(t, res))
 	}
 }
+
+func TestE2EToolAnnotations(t *testing.T) {
+	sess := e2eClient(t)
+	res, err := sess.ListTools(context.Background(), &sdk.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	byName := map[string]*sdk.Tool{}
+	for _, tl := range res.Tools {
+		byName[tl.Name] = tl
+	}
+	// Every tool must declare its annotations: the protocol defaults are
+	// readOnly=false, which would misdescribe the read-only tools to a client
+	// deciding what to call without asking the user.
+	want := map[string]struct {
+		readOnly, destructive, idempotent bool
+	}{
+		"init_project":  {false, true, true},
+		"deploy_app":    {false, false, true},
+		"get_status":    {true, false, false},
+		"get_logs":      {true, false, false},
+		"rollback_app":  {false, true, false},
+		"teardown_app":  {false, true, true},
+		"manage_server": {false, true, true},
+	}
+	for name, w := range want {
+		tl, ok := byName[name]
+		if !ok {
+			t.Errorf("tool %q missing", name)
+			continue
+		}
+		if tl.Annotations == nil {
+			t.Errorf("tool %q has no annotations", name)
+			continue
+		}
+		a := tl.Annotations
+		if a.ReadOnlyHint != w.readOnly {
+			t.Errorf("%s ReadOnlyHint = %v, want %v", name, a.ReadOnlyHint, w.readOnly)
+		}
+		// DestructiveHint is meaningful only for the mutating tools (the spec
+		// scopes it to ReadOnlyHint == false); a read-only tool must still
+		// say ReadOnlyHint, and saying false there is meaningless noise.
+		if !w.readOnly {
+			if a.DestructiveHint == nil {
+				t.Errorf("%s must state DestructiveHint explicitly (default is true)", name)
+			} else if *a.DestructiveHint != w.destructive {
+				t.Errorf("%s DestructiveHint = %v, want %v", name, *a.DestructiveHint, w.destructive)
+			}
+		} else if a.DestructiveHint != nil {
+			t.Errorf("%s is read-only; DestructiveHint should be omitted", name)
+		}
+		if !w.readOnly && a.IdempotentHint != w.idempotent {
+			t.Errorf("%s IdempotentHint = %v, want %v", name, a.IdempotentHint, w.idempotent)
+		}
+		if a.OpenWorldHint == nil {
+			t.Errorf("%s must state OpenWorldHint explicitly", name)
+		}
+		if a.Title == "" {
+			t.Errorf("%s must carry a display title", name)
+		}
+	}
+	// A read-only tool must not advertise itself as touching the outside world.
+	if a := byName["get_status"].Annotations; a.OpenWorldHint == nil || *a.OpenWorldHint {
+		t.Errorf("get_status must declare a closed domain")
+	}
+}
+
+func TestE2EDestructiveToolsAskForConfirmation(t *testing.T) {
+	sess := e2eClient(t)
+	res, err := sess.ListTools(context.Background(), &sdk.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tl := range res.Tools {
+		if tl.Annotations == nil || tl.Annotations.DestructiveHint == nil || !*tl.Annotations.DestructiveHint {
+			continue
+		}
+		// Descriptions are what the model actually reads; a destructive hint
+		// alone does not stop it, so the description has to say so too.
+		if !strings.Contains(strings.ToLower(tl.Description), "confirm") {
+			t.Errorf("destructive tool %q must tell the agent to confirm with the user: %q", tl.Name, tl.Description)
+		}
+	}
+}
+
+func TestE2EGetLogsRejectsInvalidFilter(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "easydrop.toml"), []byte("[app]\nname = \"my-api\"\nport = 8080\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	sess := e2eClient(t)
+	// A bad expression must fail loudly rather than pass every line through,
+	// which would look like an app that logs nothing but errors.
+	res := callTool(t, sess, "get_logs", map[string]any{"app_name": "my-api", "filter": "error("})
+	if !res.IsError {
+		t.Errorf("invalid filter must be an error result, got: %s", toolText(t, res))
+	}
+	if !strings.Contains(toolText(t, res), "invalid log filter") {
+		t.Errorf("error must name the bad filter: %s", toolText(t, res))
+	}
+}
+
+func TestE2EGetLogsRequiresAppName(t *testing.T) {
+	sess := e2eClient(t)
+	res := callTool(t, sess, "get_logs", map[string]any{"app_name": "  "})
+	if !res.IsError {
+		t.Errorf("blank app_name must be rejected")
+	}
+}
