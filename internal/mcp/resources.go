@@ -17,8 +17,18 @@ const troubleshootingDoc = `# EasyDrop troubleshooting runbook
 - Staging leftovers: 'docker ps -a' for *-green, 'teardown' removes them.
 
 ## Port conflicts (address already in use)
-- Blue-Green uses the {Port, Port+1} pair; both must be free on the host.
-- 'docker ps' to find the squatter; change app.port or stop it.
+- Blue-Green uses the {host_port, host_port+1} pair; both must be free on the host.
+- EasyDrop now checks the port BEFORE starting the container and reports
+  "host port N is already in use by ...". Fix it by freeing that port or moving
+  the pair: change app.host_port. Nothing is deployed and production keeps
+  serving in the meantime.
+- If the message names "a process whose owner this user cannot see", the socket
+  belongs to another user - typically the root-owned docker-proxy of an
+  unrelated container. 'ss -ltnp | grep :N' as root, or 'docker ps' to find it.
+- The check needs 'ss' (or 'netstat') on the host. Without either it is skipped
+  with a note and Docker's own "port is already allocated" is the fallback.
+- A stale *-green container from a failed deploy holds a port too; 'teardown'
+  removes it.
 
 ## Missing proxy headers / app sees http instead of https
 - Nginx sets X-Forwarded-Proto; the app must trust proxy headers.
@@ -38,6 +48,13 @@ const troubleshootingDoc = `# EasyDrop troubleshooting runbook
 ## SSH failures
 - Check server.host/user/port, key path (~ expansion supported), or password.
 - 'localhost'/'127.0.0.1' bypass SSH entirely (LocalExecutor).
+- "no ssh auth methods" means nothing was configured: no server.ssh_key, no
+  reachable agent, no server.password.
+- "SSH_AUTH_SOCK ... is set but unreachable" means the variable exists but the
+  agent behind it does not. This is the normal state for an MCP server spawned by
+  an AI client with a minimal environment. Fix by pinning the key in the config
+  (server.ssh_key), by server.password, or by having the client forward
+  SSH_AUTH_SOCK into this server's environment.
 
 ## Snap-confined docker (Ubuntu 'snap install docker')
 A snap dockerd has a private mount namespace – three separate limits:
