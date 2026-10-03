@@ -76,10 +76,22 @@ type statusOut struct {
 	SSLStatus string `json:"ssl_status,omitempty" jsonschema:"TLS info when managed"`
 }
 
+// Log tail defaults. The unfiltered default is small because the raw lines go
+// straight into the model's context. A filtered read is given a much wider
+// window: the agent asking for "error|panic" wants the error to be *in* the
+// scanned range, and a narrow window would return "0 matched", which reads as
+// "the container is healthy" rather than "raise tail and look again".
+const (
+	defaultLogTail      = 50
+	filteredLogTail     = 1000
+	logOutputLineBudget = 400
+)
+
 type logsInput struct {
 	AppName string `json:"app_name" jsonschema:"application name to read logs from"`
-	Tail    int    `json:"tail,omitempty" jsonschema:"lines of history, defaults to 50"`
+	Tail    int    `json:"tail,omitempty" jsonschema:"lines of history to scan, defaults to 50 (1000 when filter is set)"`
 	Follow  bool   `json:"follow,omitempty" jsonschema:"keep streaming until the client cancels"`
+	Filter  string `json:"filter,omitempty" jsonschema:"case-insensitive regular expression; only matching lines are returned, e.g. \"error|panic|fatal|traceback\". Use it to diagnose a failing container without flooding the context window"`
 }
 
 func handleLogs(ctx context.Context, _ *sdk.CallToolRequest, in logsInput) (*sdk.CallToolResult, logsOut, error) {
@@ -88,24 +100,58 @@ func handleLogs(ctx context.Context, _ *sdk.CallToolRequest, in logsInput) (*sdk
 	}
 	tail := in.Tail
 	if tail <= 0 {
-		tail = 50
+		tail = defaultLogTail
+		if strings.TrimSpace(in.Filter) != "" {
+			tail = filteredLogTail
+		}
 	}
 	limit := 0
 	if in.Follow {
 		limit = followLogCap
 	}
-	lines, err := deploy.Logs(ctx, defaultConfigPath, in.AppName, tail, in.Follow, limit)
+	res, err := deploy.Logs(ctx, defaultConfigPath, in.AppName, deploy.LogOptions{
+		Lines: tail, Follow: in.Follow, Limit: limit, Filter: in.Filter,
+	})
 	if err != nil {
 		return mcpErr[logsOut](fmt.Sprintf("logs failed: %v", err))
 	}
-	joined := strings.Join(lines, "\n")
+	if len(res.Lines) > logOutputLineBudget {
+		// A follow stream is unbounded by nature; the cap above can still hand
+		// back more text than a model should ingest in one turn. State the
+		// truncation instead of silently returning the first N lines.
+		res.Lines = append(res.Lines[:logOutputLineBudget:logOutputLineBudget],
+			fmt.Sprintf("[easydrop] output truncated: %d of %d matching lines shown – narrow `filter` or lower `tail`", logOutputLineBudget, res.Matched))
+		res.Matched = len(res.Lines)
+	}
+	msg := strings.Join(res.Lines, "\n")
+	if len(msg) == 0 {
+		msg = noLogsMessage(res)
+	}
 	return &sdk.CallToolResult{
-		Content: []sdk.Content{&sdk.TextContent{Text: joined}},
-	}, logsOut{Lines: lines}, nil
+		Content: []sdk.Content{&sdk.TextContent{Text: msg}},
+	}, logsOut{
+		Lines:   res.Lines,
+		Scanned: res.Scanned,
+		Matched: res.Matched,
+		Filter:  strings.TrimSpace(in.Filter),
+	}, nil
+}
+
+// noLogsMessage distinguishes the three empty cases an agent must not confuse:
+// nothing logged at all, a filter that matched nothing, and a filter that was
+// rejected. Only the first one means "the container is quiet".
+func noLogsMessage(res *deploy.LogResult) string {
+	if res.Scanned == 0 {
+		return "[easydrop] no log lines available (container may not be running, or its logs are empty)"
+	}
+	return fmt.Sprintf("[easydrop] no lines matched (scanned %d lines – widen `tail` or loosen `filter`)", res.Scanned)
 }
 
 type logsOut struct {
-	Lines []string `json:"lines" jsonschema:"collected log lines"`
+	Lines   []string `json:"lines" jsonschema:"log lines that passed the filter, in order"`
+	Scanned int      `json:"scanned" jsonschema:"lines produced by the container before filtering"`
+	Matched int      `json:"matched" jsonschema:"number of lines returned (equal to len(lines))"`
+	Filter  string   `json:"filter,omitempty" jsonschema:"the filter expression applied, if any"`
 }
 
 type rollbackInput struct {
