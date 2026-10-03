@@ -327,6 +327,22 @@ editing. Project config wins over global config, and the two are deep-merged.
 * **Path sensitivity.** Like the CLI, the tools operate on the working directory
   the client was started in, and the directory containing the `easydrop.toml`
   passed as `config_path` is the workspace that gets shipped.
+* **`ssh-agent` needs to be inherited.** If you authenticate with an agent
+  instead of a key file, the client must pass `SSH_AUTH_SOCK` into the MCP
+  server's environment. AI clients often launch the server with a minimal
+  environment where the variable is missing, or inherited but pointing at an
+  agent that is not reachable from the spawned process – `easydrop deploy` works
+  in your terminal while the same deploy through the assistant fails to
+  authenticate. When that happens easydrop says so explicitly
+  (`SSH_AUTH_SOCK=… is set but unreachable`) instead of a bare "no ssh auth
+  methods". Three ways out, in order of preference:
+  1. Put the key in the config – `ssh_key = "~/.ssh/id_ed25519"`. No agent, no
+     environment, works in every client.
+  2. Interpolate it: `password = "${EASYDROP_SSH_PASSWORD}"` read from
+     `.easydrop.env`.
+  3. Forward the variable through the client's env support, same mechanism as
+     `EASYDROP_VAULT_PASSWORD` below – `env` in the Claude/Cursor JSON,
+     `env = { … }` in opencode, `--env` for `codex mcp add`.
 
 Once connected, ask your assistant things like:
 > *"Deploy the current project to my server"*
@@ -377,11 +393,13 @@ where the edge is saves you from reaching for it in the wrong situation.
 **Hard limits, worth knowing before you rely on it**
 
 *   **Zero-downtime is one release deep.** A Blue-Green deploy stages a second
-    container on the `{host_port, host_port+1}` pair, health-checks it and flips
+container on the `{host_port, host_port+1}` pair, health-checks it and flips
     the proxy. Both ports must be free (`app.host_port` is therefore capped at
     65534), there is no traffic splitting, and the previous release is kept as
     exactly one backup – the next Blue-Green deploy discards it. `rollback_app`
-    consumes that backup and cannot be repeated.
+    consumes that backup and cannot be repeated. A port that is not free fails
+    the deploy *before* anything is started, naming the port and the squatter,
+    with production still serving.
 *   **Direct deploys** (the default) restart the container in place: brief
     downtime, no backup, no rollback.
 *   **Health checks are HTTP only.** `app.health_check_path` must answer `200`
