@@ -18,16 +18,128 @@
 
 ---
 
+## Установка
+
+### Из исходников (рекомендуется)
+
+Требуется Go >= 1.27 (см. `go.mod`; `GOTOOLCHAIN=auto` подберёт версию сам).
+
+```bash
+git clone <repo-url> easydrop && cd easydrop
+make install          # соберёт и установит в ~/.local/bin (без sudo)
+easydrop --version    # easydrop version f1491ab
+```
+
+`make install` выполняет ту же сборку, что и `make build`, и копирует бинарь в
+`$(PREFIX)/bin` – по умолчанию `~/.local/bin`, каталог обычно уже есть в
+`PATH`. Если его там нет, цель выведет точную строку, которую нужно добавить.
+Для системной установки:
+
+```bash
+sudo make install PREFIX=/usr/local     # -> /usr/local/bin/easydrop
+make uninstall                          # удалить обратно
+```
+
+Обновление в дальнейшем – `git pull && make install`. Версия в бинарь
+берётся из `git describe`: короткий хеш коммита на чистом дереве, с суффиксом
+`-dirty`, пока есть незакоммиченные изменения, и сам тег, как только вы его
+создадите (`git commit && git tag v1.0.0` → `easydrop version v1.0.0`).
+Переопределить при сборке: `make install VERSION=1.0.0`.
+
+### Готовые бинари
+
+`make release` кросс-компилирует linux/darwin/windows × amd64/arm64 в
+`bin/dist/` вместе с манифестом `SHA256SUMS` – удобно, чтобы положить бинарь на
+сервер без Go-тулчейна:
+
+```bash
+make release VERSION=1.0.0
+ls bin/dist
+# на целевой машине:
+sha256sum -c SHA256SUMS
+install -m 0755 easydrop_linux_amd64 /usr/local/bin/easydrop
+```
+
+### Установка средствами Go
+
+```bash
+go install ./cmd/easydrop      # -> $(go env GOBIN), либо $(go env GOPATH)/bin
+```
+
+Учтите, что `GOBIN`/`GOPATH/bin` во многих системах **не** в `PATH`, поэтому
+`make install` обычно удобнее.
+
+### Без установки
+
+Собранный бинарь работает на месте – удобно для быстрой проверки:
+
+```bash
+./bin/easydrop --version
+make run ARGS="status"         # пересобрать и запустить
+```
+
+---
+
 ## Быстрый старт
 
-### 1. Инициализация проекта
+### 1. Проверьте, что всё установилось
+```bash
+easydrop --version
+```
+Печатает зашитую версию, например `easydrop version v1.0.0`. Команда работает
+из любого каталога и пока не требует конфига.
+
+### 2. Инициализация проекта
 Запустите команду в корне вашего проекта:
 ```bash
 easydrop init
 ```
-Инструмент автоматически проанализирует директорию и создаст файл конфигурации `easydrop.toml`.
+Инструмент сканирует директорию и пишет готовый `easydrop.toml`: порт из
+`EXPOSE` в Dockerfile, из `ports` compose-файла, из `package.json` (явный порт
+в скрипте, иначе дефолт фреймворка) или – для языков, у которых манифест не
+содержит порта (в первую очередь Go) – ограниченным просмотром собственного
+исходника; плюс определённый стек и драйвер, если найден compose-файл. Каждое
+значение выводится вместе с источником, и ничего не додумывается:
 
-### 2. Настройка конфигурации
+```
+wrote easydrop.toml
+  app     go-svc (directory name)
+  port    9090 (source scan)
+  stack   go
+  driver  single
+```
+
+Два значения всё равно требуют вас: `[server].host` (init пишет `localhost`) и
+`app.port` – когда в проекте порт нигде не указан. В этом случае init **не
+пишет порт вообще** и печатает `port NOT SET`:
+
+```
+  port    NOT SET – nothing in the project states it
+
+ACTION REQUIRED: set [app].port in easydrop.toml …
+```
+
+Дефолта 8080 здесь нет намеренно. Неверный порт не ломает сборку – он ломает
+деплой: для single это таймаут healthcheck, а для compose/swarm (у которых нет
+HTTP-проверки вообще) – успешный деплой за 502-прокси. Неполный конфиг, который
+откажется деплоиться, чинить куда дешевле, чем полный, который врёт.
+
+Если порт известен (или AI-агент вычислил его по коду), детектирование можно
+пропустить:
+
+```bash
+easydrop init --port 8080    # важнее детекции, в отчёте – "explicit override"
+```
+
+Существующий файл не перезаписывается; `--force` генерирует файл заново и
+затирает правки руками. MCP-инструмент `init_project` принимает тот же порт
+аргументом и печатает ровно тот же отчёт.
+
+Ошибки в файлах проекта (битый JSON/YAML, `EXPOSE banana`) не ломают `init` –
+детектор просто переходит к следующему источнику. Полные правила и порядок
+приоритетов – в [docs/cli-spec.md](docs/cli-spec.md) §1.1.
+
+### 3. Настройка конфигурации
 Отредактируйте сгенерированный `easydrop.toml`, указав параметры вашего сервера и домен:
 
 ```toml
@@ -55,7 +167,7 @@ domain = "my-project.com"
 ssl = true
 ```
 
-### 3. Деплой
+### 4. Деплой
 Запустите процесс развертывания одной командой:
 ```bash
 easydrop deploy
@@ -64,18 +176,172 @@ EasyDrop сам подключится по SSH, проверит наличие
 
 **Откат:** `easydrop rollback` возвращает предыдущую версию – остановленный контейнер-бэкап для Blue-Green, предыдущий stack-файл для Compose/Swarm.
 
+### 5. Ежедневные команды
+
+```bash
+easydrop status                 # поднят ли аппарат, сколько работает, статус TLS
+easydrop logs -f                # живой стрим логов контейнера
+easydrop logs -n 200            # последние 200 строк и выход
+easydrop rollback               # вернуть предыдущий Blue-Green бэкап
+easydrop teardown               # убрать контейнеры/бэкапы (volumes остаются)
+easydrop deploy -c path/to/easydrop.toml    # любая команда принимает путь к конфигу
+```
+
+`status`, `logs`, `rollback` и `teardown` берут имя приложения из
+`./easydrop.toml`; передайте имя явно, чтобы переопределить
+(`easydrop logs my-app`). Полный список команд – в
+[docs/cli-spec.md](docs/cli-spec.md).
+
+---
+
+## Примеры конфигурации
+
+Не знаете, какие опции включать? В директории [`examples/`](examples/) лежат готовые к копированию `easydrop.toml` под каждый поддерживаемый сценарий – по файлу на кейс, с комментариями о том, **почему** значения именно такие:
+
+*   удалённый VPS по SSH-ключу или по паролю, нестандартный порт SSH;
+*   локальная разработка с разделением `host_port`;
+*   reverse-proxy на домен – с Let's Encrypt и без него;
+*   Blue-Green деплой без даунтайма и пересборка с `--no-cache`;
+*   сборка локально + push в registry, в том числе с зафиксированным тегом;
+*   Compose- и Swarm-стеки – с ingress и без него.
+
+Разбор всех кейсов, полный справочник по ключам и правила валидации – в
+[`examples/README.md`](examples/README.md). Если нужна только схема, начните с
+[`examples/99-full-reference.toml`](examples/99-full-reference.toml).
+
+**Credentials:** литеральный `server.password` – это секрет в репозитории.
+Либо отдайте ключ ssh-agent'у (`eval "$(ssh-agent -s)" && ssh-add <ключ>`, а
+поля с credential оставьте пустыми), либо подтягивайте из переменной –
+`password = "${EASYDROP_SSH_PASSWORD}"` из окружения или из git-ignored файла
+`.easydrop.env` рядом с конфигом. Незаданная переменная валит команду до
+установки SSH-соединения, и эти файлы никогда не отправляются на целевой хост.
+
 ---
 
 ## Использование с AI-ассистентами (MCP)
 
-EasyDrop поддерживает **Model Context Protocol (MCP)**. Вы можете подключить его к вашему AI-клиенту (например, Cursor), добавив MCP-сервер в настройки:
+EasyDrop предоставляет нативный интерфейс **Model Context Protocol (MCP)** по
+**stdio** – тот же бинарь, один дополнительный аргумент:
 
-*   **Тип:** `stdio`
-*   **Команда:** `easydrop mcp-server` (или путь к бинарнику + аргумент `mcp-server`)
+```bash
+easydrop mcp-server
+```
 
-После этого вы сможете просить AI в чате:
-> *"Задеплой текущий проект на сервер"*  
-> *"Посмотри логи контейнера и скажи, почему падает база данных"*
+Укажите AI-клиенту эту команду – и он сможет управлять деплоями. Клиент
+запускает бинарь сам, поэтому бинарь должен быть в `PATH` – либо передайте
+абсолютный путь (см. примечание в конце раздела).
+
+Доступные инструменты: `deploy_app`, `get_status`, `get_logs`, `init_project`,
+`rollback_app`, `teardown_app`, `manage_server`. Плюс два ресурса:
+`easydrop://docs/schema` (JSON-схема `easydrop.toml`, генерируется из тех же
+структур, что использует парсер) и `easydrop://docs/troubleshooting`
+(self-healing runbook: порты, проба, прокси, ограничения snap-docker, sudo,
+rollback, SSH). Подробности – в [docs/mcp-spec.md](docs/mcp-spec.md).
+
+### Claude Code
+
+Добавьте через CLI (так файл пишется сам):
+
+```bash
+claude mcp add --scope user    easydrop -- easydrop mcp-server   # во все проекты
+claude mcp add --scope project easydrop -- easydrop mcp-server   # только в этом репозитории
+claude mcp list                                                   # проверка
+```
+
+Либо правьте файл сами. **Project scope** пишет `.mcp.json` в корень проекта
+(его можно закоммитить, тогда настройка уедет команде); **user scope** пишет
+`~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "easydrop": {
+      "command": "easydrop",
+      "args": ["mcp-server"]
+    }
+  }
+}
+```
+
+### Cursor
+
+Правьте **`.cursor/mcp.json`** – в проекте для сервера в рамках workspace, либо
+`~/.cursor/mcp.json` для всех проектов. То же самое доступно в
+*Settings → MCP & Integrations*, где stdio-сервер добавляется вручную.
+
+```json
+{
+  "mcpServers": {
+    "easydrop": {
+      "command": "easydrop",
+      "args": ["mcp-server"]
+    }
+  }
+}
+```
+
+### Codex
+
+Codex читает TOML, а не JSON – файл `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.easydrop]
+command = "easydrop"
+args = ["mcp-server"]
+```
+
+Или пусть CLI запишет его сам:
+
+```bash
+codex mcp add easydrop -- easydrop mcp-server
+codex mcp list
+```
+
+### opencode
+
+Добавьте сервер в **`~/.config/opencode/opencode.json`** (для всех проектов)
+или в `opencode.json` проекта. Форма opencode отличается: объект `mcp`,
+обязательное `type` и `command` в виде **массива**:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "easydrop": {
+      "type": "local",
+      "command": ["easydrop", "mcp-server"],
+      "enabled": true
+    }
+  }
+}
+```
+
+opencode читает конфиг **один раз при старте** – после правки его нужно
+перезапустить. Конфиг проекта перекрывает глобальный, файлы глубоко
+мерджатся.
+
+### Общие примечания для всех четырёх клиентов
+
+* **Абсолютные пути.** Если клиент стартует с минимальным окружением и не видит
+  ваш `PATH`, замените `"easydrop"` на реальный путь – его печатает
+  `command -v easydrop` (обычно `~/.local/bin/easydrop`, а для системной
+  установки `/usr/local/bin/easydrop`). Это самая частая причина, по которой
+  настроенный сервер не запускается.
+* **Перезапускайте клиент** после правки конфига (для opencode – обязательно).
+* **`manage_server`** – единственный инструмент, которому нужен секрет:
+  зашифрованный vault разблокируется через `EASYDROP_VAULT_PASSWORD`, интерактивного
+  запроса пароля нет. Передайте его через поддержку env в клиенте, например
+  `claude mcp add -e EASYDROP_VAULT_PASSWORD=… --scope user easydrop -- easydrop mcp-server`,
+  флагом `--env` у `codex mcp add` или объектом `environment` в конфиге opencode.
+  Всё остальное (`deploy_app`, `get_logs`, …) работает вообще без настройки –
+  учётные данные берутся из `easydrop.toml`, `ssh-agent` или `.easydrop.env`.
+* **Чувствительны к рабочему каталогу.** Как и CLI, инструменты работают с тем
+  каталогом, из которого запущен клиент, а рабочая область деплоя –
+  это каталог с `easydrop.toml`, переданным в `config_path`.
+
+После подключения можно просить ассистента, например:
+> *"Задеплой текущий проект на сервер"*
+> *"Покажи логи контейнера и скажи, почему падает база данных"*
 
 ---
 
@@ -87,6 +353,7 @@ EasyDrop поддерживает **Model Context Protocol (MCP)**. Вы мож�
 *   [implementation.md](docs/implementation.md) – пошаговый технический гайд для разработки.
 *   [cli-spec.md](docs/cli-spec.md) – полная спецификация доступных команд терминала и их флагов.
 *   [mcp-spec.md](docs/mcp-spec.md) – JSON-RPC схемы инструментов (Tools) и ресурсов для LLM.
+*   [examples/README.md](examples/README.md) – примеры `easydrop.toml` под все поддерживаемые сценарии и полный справочник по ключам.
 
 ---
 
