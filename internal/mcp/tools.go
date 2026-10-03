@@ -18,7 +18,7 @@ const followLogCap = 2000
 
 type initInput struct {
 	Force bool `json:"force,omitempty" jsonschema:"overwrite an existing easydrop.toml (regenerates it from scratch, discarding hand edits)"`
-	Port  int  `json:"port,omitempty" jsonschema:"the port the app listens on INSIDE the container; overrides detection. Omit to detect it — when nothing in the project states it, easydrop writes no port and deploy_app fails until one is set"`
+	Port  int  `json:"port,omitempty" jsonschema:"the port the app listens on INSIDE the container; overrides detection. Omit to detect it – when nothing in the project states it, easydrop writes no port and deploy_app fails until one is set"`
 }
 
 func handleInit(ctx context.Context, _ *sdk.CallToolRequest, in initInput) (*sdk.CallToolResult, textOut, error) {
@@ -28,7 +28,7 @@ func handleInit(ctx context.Context, _ *sdk.CallToolRequest, in initInput) (*sdk
 		return errResult(fmt.Sprintf("init failed: %v", err))
 	}
 	// The same Report() the CLI prints. An agent must not receive a weaker
-	// description of the outcome than a human does — the port-missing case in
+	// description of the outcome than a human does – the port-missing case in
 	// particular has to reach it with the method, not just the prohibition.
 	return okResult(strings.TrimRight(res.Report(), "\n"))
 }
