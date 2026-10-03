@@ -9,10 +9,13 @@ Single binary, no separate `easydrop-mcp` executable.
 AI assistants invoke these structured primitives to safely manage infrastructure configurations. The underlying MCP server pipes these method parameters directly into targeted execution routines within the `internal/core` logic layer.
 
 ### 1.1. `init_project`
-- **Description:** Scans the active local application layout to dynamically generate an optimized, pre-filled boilerplate deployment configuration file.
-- **Detection (M14, FR-02/FR-02B):** identical rules to CLI `init` (see `docs/cli-spec.md` §1.1) – compose `ports`/`expose`, Dockerfile `EXPOSE`, `package.json` (script port, then framework), a bounded source scan, then the `8080` fallback. The tool result must name the **source** of every value and must warn when the port is a guess, so the agent can correct `app.port` before deploying instead of discovering a healthcheck timeout. It also reports that `[server].host` is `localhost`.
+- **Description:** Scan the project and generate `easydrop.toml`: detect the listen port (Dockerfile `EXPOSE`/`CMD`, compose ports, an explicit `--port` flag, `PORT=` in `.env`, framework conventions, or a bounded look at the project's own source), the stack, and the driver. Nothing is guessed – when no port can be found, `[app].port` is left unset and `deploy_app` fails until you set it, so either resolve it by reading the code or pass the port via the `port` argument.
+- **Detection (M14, FR-02/FR-02B):** identical rules to CLI `init` (see `docs/cli-spec.md` §1.1). The result names the **source** of every detected value, and when no port is found the key is simply absent (OD-04) – `deploy_app` then fails with an actionable message instead of deploying a guess.
+- **Result text is the CLI's text (M15):** the tool returns `ScaffoldResult.Report()` verbatim – the same string `easydrop init` prints. There is exactly one report, so an agent cannot receive a weaker description of the outcome than a human. The port-missing block therefore carries the **method** (where the server binds), the obligation to write `app.port` into `easydrop.toml` – easydrop has no tool for that – and both escape hatches, instead of only forbidding a guess.
+- **The description matters:** it is always in the model's context, unlike the result, which only arrives after the call. That is why the port caveat lives there too. Both the description and the argument are covered by tests over a real session.
 - **Arguments:**
-  - `force` (boolean, optional): Overwrite an already existing `easydrop.toml` without prompting. Defaults to `false`. (Mirrors CLI `init --force`.)
+  - `force` (boolean, optional): Overwrite an already existing `easydrop.toml`. Regenerates it from scratch, discarding hand edits. Defaults to `false`. (Mirrors CLI `init --force`.)
+  - `port` (integer, optional): The port the app listens on **inside** the container. Overrides detection and is reported as `explicit override`; omitted (or `0`) means "detect". Must be 1-65535. This is the supported path for an agent that determined the port itself. (Mirrors CLI `init --port`.)
 
 ### 1.2. `deploy_app`
 - **Description:** Spawns the entire execution pipeline covering target environment health checks, workspace asset compiling, and live ingress container switches.
@@ -60,7 +63,7 @@ The protocol maps contextual state metrics allowing connected LLM instances to a
 ## 3. Tool → Core mapping
 | Tool | Core entrypoint |
 |------|-----------------|
-| `init_project` | config scaffolding (Milestone 7, FR-02; detection M14) |
+| `init_project` | config scaffolding (Milestone 7, FR-02; detection M14, shared report + `port` override M15) |
 | `deploy_app` | `Bootstrapper.Bootstrap` → builder `Build(ctx, app)` → `SingleDriver.Deploy(ctx, app)` → Nginx/Certbot |
 | `get_status` | `SingleDriver.Status(ctx, appName)` |
 | `get_logs` | `SingleDriver.Logs(ctx, appName, lines, follow)` |
