@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"easydrop/internal/config"
 	"easydrop/internal/core"
@@ -201,8 +203,43 @@ func Status(ctx context.Context, configPath, appName string) (*models.AppStatus,
 	return drv.Status(ctx, name)
 }
 
-// Logs collects container logs; follow streams until ctx ends or limit hits.
-func Logs(ctx context.Context, configPath, appName string, lines int, follow bool, limit int) ([]string, error) {
+// LogOptions carries the `logs` inputs both interfaces share.
+type LogOptions struct {
+	// Lines is the tail snapshot size (docker logs --tail).
+	Lines int
+	// Follow keeps streaming until ctx ends or Limit hits.
+	Follow bool
+	// Limit caps the number of *kept* lines; 0 means unlimited. Follow sets it
+	// on both interfaces so a forgotten stream cannot grow without bound. It
+	// counts lines that passed the filter, so a filter that never matches
+	// still terminates (the driver channel closes when ctx ends).
+	Limit int
+	// Filter is a case-insensitive regular expression. Empty means no
+	// filtering. Filtering happens after collection so it is identical for a
+	// snapshot and a follow stream, and so a bad expression can never leave a
+	// half-streamed channel behind.
+	Filter string
+}
+
+// LogResult is the outcome of a log read: the lines that survived the filter
+// plus the counts needed to tell "no errors" apart from "nothing collected".
+type LogResult struct {
+	// Lines are the kept lines, in collection order.
+	Lines []string
+	// Scanned is how many lines the driver produced before filtering.
+	Scanned int
+	// Matched is len(Lines) – the two are separate so a caller can report
+	// "0 of 500 lines matched" instead of an empty answer.
+	Matched int
+}
+
+// Logs collects container logs; follow streams until ctx ends or the limit hits.
+// The filter is applied to the collected lines (see LogOptions.Filter).
+func Logs(ctx context.Context, configPath, appName string, opts LogOptions) (*LogResult, error) {
+	filter, err := compileLogFilter(opts.Filter)
+	if err != nil {
+		return nil, err
+	}
 	cfg, ex, name, err := setupDriver(configPath, appName)
 	if err != nil {
 		return nil, err
@@ -212,18 +249,46 @@ func Logs(ctx context.Context, configPath, appName string, lines int, follow boo
 	if err != nil {
 		return nil, err
 	}
-	ch, err := drv.Logs(ctx, name, lines, follow)
+	ch, err := drv.Logs(ctx, name, opts.Lines, opts.Follow)
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	return collectLogs(ch, filter, opts.Limit), nil
+}
+
+// collectLogs drains ch, keeping the lines that match, and counts what it
+// scanned. Separated from Logs so the filtering contract is testable without a
+// live host, and so both interfaces get it by construction.
+func collectLogs(ch <-chan string, filter *regexp.Regexp, limit int) *LogResult {
+	res := &LogResult{}
 	for line := range ch {
-		out = append(out, line)
-		if limit > 0 && len(out) >= limit {
+		res.Scanned++
+		if !filter.MatchString(line) {
+			continue
+		}
+		res.Lines = append(res.Lines, line)
+		if limit > 0 && len(res.Lines) >= limit {
 			break
 		}
 	}
-	return out, nil
+	res.Matched = len(res.Lines)
+	return res
+}
+
+// compileLogFilter turns the user expression into a matcher. An empty
+// expression matches everything; an invalid one is an error rather than a
+// silently-pass filter, which would look like "the container logged nothing".
+func compileLogFilter(expr string) (*regexp.Regexp, error) {
+	if strings.TrimSpace(expr) == "" {
+		return regexp.MustCompile(""), nil
+	}
+	// (?i) makes the expression case-insensitive: log levels are spelled
+	// ERROR, Error and error depending on the framework.
+	re, err := regexp.Compile("(?i)" + expr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid log filter %q: %w", expr, err)
+	}
+	return re, nil
 }
 
 // Rollback restores the backup kept by the last replacing deploy.
