@@ -22,6 +22,9 @@ const (
 	PortSourceComposePort   = "compose ports:"
 	PortSourceComposeExp    = "compose expose:"
 	PortSourceSourceScan    = "source scan"
+	// PortSourceOverride means the caller supplied the port explicitly
+	// (`init --port N`, `init_project {"port": N}`), which outranks detection.
+	PortSourceOverride = "explicit override"
 	// PortSourceUnknown means nothing in the project stated the port. No value
 	// is written to the config in that case (OD-04): a guessed 8080 builds fine
 	// and then breaks the deploy, which is far more expensive to debug.
