@@ -4,6 +4,26 @@ Transport: stdio via the same binary – `easydrop mcp-server` (see `docs/cli-sp
 SDK: official `modelcontextprotocol/go-sdk` (locked, see ARCHITECTURE.md §5).
 Single binary, no separate `easydrop-mcp` executable.
 
+### 0.1. Process environment (locked)
+The server is a **spawned child process**: the client chooses its environment, not
+the user's shell. Two consequences are contractual, because both produce failures
+that look like easydrop bugs rather than configuration:
+
+- **The working directory** is the client's, not the terminal's. Every tool
+  resolves `config_path` relative to it, and that config's directory is the
+  workspace that gets shipped (§1 tools).
+- **`SSH_AUTH_SOCK` must be forwarded when ssh-agent is the auth method.** Auth is
+  assembled in the order key file → agent → password (`SSHExecutor.authMethods`).
+  A client that starts the server without `SSH_AUTH_SOCK` (or with it pointing at
+  an agent unreachable from the child) loses the agent method silently, which used
+  to surface as the bare `no ssh auth methods`. The reason is now carried into the
+  error: `SSH_AUTH_SOCK=<path> is set but unreachable … If easydrop was started by
+  another program (an MCP client), that program must pass SSH_AUTH_SOCK through to
+  its environment`. A dead socket never blocks the password or key-file methods –
+  it only sharpens the diagnostic when nothing else is configured.
+- **`EASYDROP_VAULT_PASSWORD`** is the same class of requirement for
+  `manage_server` (§1.7): non-interactive, no prompt, fails closed.
+
 ## 1. JSON-RPC Tools Schema
 
 AI assistants invoke these structured primitives to safely manage infrastructure configurations. The underlying MCP server pipes these method parameters directly into targeted execution routines within the `internal/core` logic layer.
