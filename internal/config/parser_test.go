@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"easydrop/internal/models"
 )
 
 func writeTempTOML(t *testing.T, content string) string {
@@ -227,6 +230,51 @@ user = "root"`,
 		t.Run(name, func(t *testing.T) {
 			if _, err := ParseConfig(writeTempTOML(t, tomlBody)); err == nil {
 				t.Errorf("ParseConfig() expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestValidateNginx(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cfg     models.NginxConfig
+		wantErr string
+	}{
+		{"no tls", models.NginxConfig{}, ""},
+		{"letsencrypt", models.NginxConfig{Domain: "api.example.com", SSL: true}, ""},
+		{"self-signed localhost", models.NginxConfig{Domain: "localhost", SSL: true, SelfSigned: true}, ""},
+		{"self-signed ip", models.NginxConfig{Domain: "127.0.0.1", SSL: true, SelfSigned: true}, ""},
+		{"self-signed internal name", models.NginxConfig{Domain: "api.internal.test", SSL: true, SelfSigned: true}, ""},
+		// self_signed selects HOW the certificate is obtained, so it cannot stand
+		// alone – accepting it would leave the user wondering why no TLS appeared.
+		{"self-signed without ssl", models.NginxConfig{Domain: "localhost", SelfSigned: true},
+			"nginx.self_signed requires nginx.ssl = true"},
+		{"ssl without domain", models.NginxConfig{SSL: true},
+			"requires a non-empty nginx.domain"},
+		{"self-signed without domain", models.NginxConfig{SSL: true, SelfSigned: true},
+			"requires a non-empty nginx.domain"},
+		// A wildcard passes validateDomain (it is legal in server_name) but is
+		// useless in a leaf certificate: browsers reject a self-signed wildcard
+		// outside the issuer's own domain, and it does not match the bare host.
+		{"self-signed wildcard", models.NginxConfig{Domain: "*.example.com", SSL: true, SelfSigned: true},
+			"wildcard domain"},
+		{"self-signed injection", models.NginxConfig{Domain: "a b.com", SSL: true, SelfSigned: true},
+			"must be a hostname"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateNginx(&tc.cfg)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err, tc.wantErr)
 			}
 		})
 	}
