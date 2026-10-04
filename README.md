@@ -25,7 +25,7 @@ It delivers a PaaS-like experience (similar to Railway or Fly.io) on your own in
 Requires Go >= 1.27 (see `go.mod`; `GOTOOLCHAIN=auto` resolves it).
 
 ```bash
-git clone <repo-url> easydrop && cd easydrop
+git clone https://github.com/Dmitry178/EasyDrop easydrop && cd easydrop
 make install          # builds, then installs into ~/.local/bin (no sudo)
 easydrop --version    # easydrop version 1.0.0
 ```

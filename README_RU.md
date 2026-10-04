@@ -25,7 +25,7 @@
 Требуется Go >= 1.27 (см. `go.mod`; `GOTOOLCHAIN=auto` подберёт версию сам).
 
 ```bash
-git clone <repo-url> easydrop && cd easydrop
+git clone https://github.com/Dmitry178/EasyDrop easydrop && cd easydrop
 make install          # соберёт и установит в ~/.local/bin (без sudo)
 easydrop --version    # easydrop version 1.0.0
 ```
