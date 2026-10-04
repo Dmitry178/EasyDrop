@@ -254,6 +254,28 @@ Ingress is controlled entirely by `nginx.domain`:
 2 seconds apart, then the deploy fails. Point it at a cheap, dependency-light
 endpoint: one that needs the database turns a slow start into a failed deploy.
 
+### Taking it back down
+
+`teardown` removes the containers, the Blue-Green backup and – when
+`nginx.domain` is set – the managed vhost, then reloads nginx. The reload is
+guarded: the files are deleted, `nginx -t` runs, and nginx is reloaded only if it
+passes, because reloading a rejected config would take down every other site on
+the host. If it fails, the output says so, because the running nginx still serves
+the vhost it had already loaded and your domain keeps answering `502` until
+someone reloads.
+
+```bash
+easydrop teardown                        # containers, backups, vhost
+easydrop teardown --purge                # ...and the self-signed certificate
+```
+
+Named volumes always survive – data outlives the deployment. The built image
+survives too, because `build.image` may be shared with another app. A Let's
+Encrypt certificate is never deleted: certbot renews it on its own timer and may
+still be serving the domain through a vhost you wrote yourself. A self-signed
+certificate is deleted only with `--purge`, and the next `deploy` issues a fresh
+one (which your browser will ask you to trust again).
+
 ## 6. Full reference
 
 [`99-full-reference.toml`](99-full-reference.toml) lists every key with its
