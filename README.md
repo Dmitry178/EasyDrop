@@ -171,7 +171,8 @@ easydrop status                 # is the app up, since when, TLS status
 easydrop logs -f                # stream container logs
 easydrop logs -n 200            # last 200 lines and exit
 easydrop rollback               # restore the previous Blue-Green backup
-easydrop teardown               # remove containers/backups (volumes are kept)
+easydrop teardown               # remove containers, backups and the nginx vhost (volumes are kept)
+easydrop teardown --purge       # ...and the self-signed certificate
 easydrop deploy -c path/to/easydrop.toml    # any command takes an explicit config
 ```
 
@@ -423,6 +424,15 @@ container on the `{host_port, host_port+1}` pair, health-checks it and flips
     server.
 *   **Data is never backed up or migrated.** `teardown_app` deliberately keeps
     named volumes, but nothing here snapshots, replicates or restores a database.
+    The built image also survives: `build.image` may be shared with another app,
+    and easydrop cannot know who else it feeds.
+*   **`teardown` removes the nginx vhost, and reloads nginx only if `nginx -t`
+    passes.** Reloading a rejected config would take down every other site on
+    the host, so if the test fails the files are gone but nginx keeps serving
+    what it had loaded – the domain keeps answering `502` until someone reloads.
+    That case is reported rather than hidden. A Let's Encrypt certificate is
+    never deleted (certbot owns it); a self-signed one needs `--purge` /
+    `purge: true`.
 *   **Logs live in the Docker daemon.** `logs` / `get_logs` read them live with
     a tail bound and a filter; there is no shipping, retention or search. Pair it
     with your own log agent if you need history.
