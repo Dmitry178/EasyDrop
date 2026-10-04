@@ -109,6 +109,15 @@ domain = "api.example.com"
 # Default false. Requires `domain` to be non-empty.
 ssl = true
 
+# Generate the certificate locally instead of asking Let's Encrypt. Requires
+# ssl = true. Use it for `localhost` and internal DNS, where no ACME authority
+# can validate you: easydrop writes a P-256 leaf with SubjectAltName into
+# /etc/nginx/ssl/, serves it on :443, and keeps :80 proxying (no redirect, so
+# http:// keeps working). The certificate is reused until it is within 30 days
+# of expiry; the browser warns until you trust it once, and easydrop prints the
+# command rather than touching your system trust store. Default false.
+self_signed = false
+
 # ACME contact address. Default "". Empty registers without an email – nobody
-# warns you before expiry.
+# warns you before expiry. Ignored when self_signed = true.
 email = "ops@example.com"
