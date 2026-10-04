@@ -126,3 +126,33 @@ func TestLogsInvalidGrepFails(t *testing.T) {
 		t.Fatalf("invalid --grep must fail the command")
 	}
 }
+
+// TestTeardownFlagsWired pins the teardown surface: --purge must exist (M19) and
+// the long help must state the two things a user could get wrong, namely that
+// the nginx vhost is removed too and that a Let's Encrypt certificate is not.
+func TestTeardownFlagsWired(t *testing.T) {
+	var td *cobra.Command
+	for _, c := range rootCmd().Commands() {
+		if c.Name() == "teardown" {
+			td = c
+		}
+	}
+	if td == nil {
+		t.Fatal("teardown command missing")
+	}
+	purge := td.Flags().Lookup("purge")
+	if purge == nil {
+		t.Fatal("teardown missing --purge")
+	}
+	if purge.DefValue != "false" {
+		t.Errorf("--purge must default to false, got %q", purge.DefValue)
+	}
+	if purge.Usage == "" {
+		t.Error("--purge needs a usage string")
+	}
+	for _, want := range []string{"vhost", "Let's Encrypt"} {
+		if !strings.Contains(td.Long, want) {
+			t.Errorf("teardown --help must mention %q, got:\n%s", want, td.Long)
+		}
+	}
+}
