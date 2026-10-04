@@ -53,7 +53,12 @@ type DriverConfig struct {
 type NginxConfig struct {
 	Domain string `toml:"domain"`
 	SSL    bool   `toml:"ssl"`
-	Email  string `toml:"email,omitempty"`
+	// SelfSigned switches certificate provisioning from Let's Encrypt to a
+	// locally generated leaf (M18). Requires SSL. Implies `listen 443` in the
+	// managed vhost, which the Let's Encrypt path never writes – certbot adds
+	// that block itself once ACME succeeds.
+	SelfSigned bool   `toml:"self_signed,omitempty"`
+	Email      string `toml:"email,omitempty"`
 }
 
 // Application acts as the compiled runtime context passing through the Core.
