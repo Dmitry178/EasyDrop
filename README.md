@@ -27,7 +27,7 @@ Requires Go >= 1.27 (see `go.mod`; `GOTOOLCHAIN=auto` resolves it).
 ```bash
 git clone <repo-url> easydrop && cd easydrop
 make install          # builds, then installs into ~/.local/bin (no sudo)
-easydrop --version    # easydrop version f1491ab
+easydrop --version    # easydrop version 1.0.0
 ```
 
 `make install` runs the same build as `make build` and copies the result to
@@ -404,8 +404,14 @@ container on the `{host_port, host_port+1}` pair, health-checks it and flips
     with production still serving.
 *   **Direct deploys** (the default) restart the container in place: brief
     downtime, no backup, no rollback.
-*   **Health checks are HTTP only.** `app.health_check_path` must answer `200`
-    from inside the container. There are no TCP, command or exec-style checks.
+*   **Health checks are HTTP, optionally over TLS.** `app.health_check_path` must
+    answer `200` from inside the container, probed up to 10 times 2 seconds
+    apart. By default the probe tries HTTP and falls back to HTTPS in the same
+    attempt, so an app that answers only over TLS – or that redirects everything
+    to HTTPS – deploys normally; `app.health_check_scheme` pins it to `http` or
+    `https`. Redirects are never followed, deliberately: `-L` would let an app
+    pass by bouncing the probe at an unrelated `200` page. There are no TCP,
+    command or exec-style checks, and no per-app tuning of the retry count.
 *   **Let's Encrypt is HTTP-01 only, and a self-signed alternative exists.** The
     ACME path needs the domain to resolve publicly with port 80 reachable; there
     is no DNS-01 challenge and no wildcard handling. EasyDrop writes a plain HTTP
@@ -433,6 +439,11 @@ container on the `{host_port, host_port+1}` pair, health-checks it and flips
     That case is reported rather than hidden. A Let's Encrypt certificate is
     never deleted (certbot owns it); a self-signed one needs `--purge` /
     `purge: true`.
+*   **`status` reports the certificate nginx actually serves, in both modes.**
+    It reads the running configuration and the certificate file the vhost names,
+    so the expiry date, the `EXPIRING` warning and a `DOES NOT COVER` mismatch
+    are facts rather than the configured intent. No output means "could not
+    tell", never "no TLS".
 *   **Logs live in the Docker daemon.** `logs` / `get_logs` read them live with
     a tail bound and a filter; there is no shipping, retention or search. Pair it
     with your own log agent if you need history.
@@ -448,6 +459,7 @@ container on the `{host_port, host_port+1}` pair, health-checks it and flips
 ## Project Documentation Structure
 
 The core codebase documentation is decoupled by operational boundaries:
+*   [CHANGELOG.md](CHANGELOG.md) – Release notes.
 *   [PRD.md](PRD.md) – Product scope, operational logic, and functional requirements.
 *   [ARCHITECTURE.md](ARCHITECTURE.md) – Component layouts, state management specifications, and internal Go package map.
 *   [docs/implementation.md](docs/implementation.md) – Technical roadmap and exact build execution steps for the AI agent.
