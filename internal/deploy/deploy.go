@@ -64,7 +64,14 @@ func ApplyFlags(cfg *models.Config, noCache, blueGreen bool) {
 func NewDriver(cfg *models.Config, ex core.CommandExecutor, srcDir string) (drivers.DeploymentDriver, error) {
 	var ingress drivers.IngressUpdater
 	if cfg.Nginx.Domain != "" {
-		ingress = infra.NewNginxManager(ex)
+		// Self-signed TLS changes what the vhost must contain, and the manager
+		// owns both the config and the certificate, so the choice is made here
+		// rather than left to the caller (M18).
+		if cfg.Nginx.SelfSigned {
+			ingress = infra.NewNginxManagerTLS(ex)
+		} else {
+			ingress = infra.NewNginxManager(ex)
+		}
 	}
 	switch cfg.Driver.Type {
 	case "single":
@@ -152,7 +159,12 @@ func Run(ctx context.Context, opts Options, out func(string)) error {
 		return err
 	}
 
-	if cfg.Nginx.SSL && cfg.Nginx.Domain != "" {
+	// Let's Encrypt only. The self-signed path is already complete: the ingress
+	// manager generated the certificate and wrote the 443 block during Deploy,
+	// and handing the same domain to certbot afterwards would overwrite a working
+	// vhost with an ACME one (or, on a localhost target, fail against a domain
+	// Let's Encrypt cannot validate).
+	if cfg.Nginx.SSL && !cfg.Nginx.SelfSigned && cfg.Nginx.Domain != "" {
 		cm := infra.NewCertbotManager(ex, cfg.Server.Host)
 		if err := cm.EnableSSL(ctx, cfg.Nginx.Domain, cfg.Nginx.Email); err != nil {
 			return err
