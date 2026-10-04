@@ -188,7 +188,8 @@ ready-to-copy `easydrop.toml` for every supported scenario – one file per case
 each commented with *why* those values are what they are:
 
 *   remote VPS over an SSH key or a password, hardened SSH ports
-*   local development with a `host_port` split
+*   local development with a `host_port` split, and local TLS via a self-signed
+    certificate
 *   domain reverse proxy, with or without Let's Encrypt TLS
 *   Blue-Green zero-downtime deploys and `--no-cache` rebuilds
 *   build-here + registry push, including pinned image tags
@@ -404,12 +405,19 @@ container on the `{host_port, host_port+1}` pair, health-checks it and flips
     downtime, no backup, no rollback.
 *   **Health checks are HTTP only.** `app.health_check_path` must answer `200`
     from inside the container. There are no TCP, command or exec-style checks.
-*   **TLS is Let's Encrypt over HTTP-01 only.** The domain must resolve publicly
-    and port 80 must be reachable. There is no DNS-01 challenge, no wildcard
-    handling and no self-signed certificate generation – with a localhost target
-    `nginx.ssl` is a no-op. EasyDrop writes a plain HTTP vhost and lets
-    `certbot --nginx` add the TLS block; renewal afterwards is certbot's own
-    timer, not something EasyDrop schedules.
+*   **Let's Encrypt is HTTP-01 only, and a self-signed alternative exists.** The
+    ACME path needs the domain to resolve publicly with port 80 reachable; there
+    is no DNS-01 challenge and no wildcard handling. EasyDrop writes a plain HTTP
+    vhost and lets `certbot --nginx` add the TLS block, after which renewal is
+    certbot's own timer, not something EasyDrop schedules.
+    For `localhost` and internal DNS – where no ACME authority can validate you –
+    set `nginx.self_signed = true`: EasyDrop generates a P-256 leaf with
+    SubjectAltName, installs it in `/etc/nginx/ssl/` (key `0600`), and serves
+    `:443` itself, keeping `:80` proxying. It is reused until it is within 30
+    days of expiry, so the browser warning you accept once does not come back on
+    every deploy. The certificate is **not** added to your system trust store –
+    that needs sudo and would change what every other program on your machine
+    trusts, so EasyDrop prints the command instead.
 *   **nginx and certbot must already be installed** on the target. Bootstrapping
     installs Docker Engine, Docker Compose and the firewall rules – not the web
     server.
