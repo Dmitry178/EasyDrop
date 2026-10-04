@@ -279,3 +279,44 @@ func TestValidateNginx(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateHealthCheckScheme(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"", "", false},
+		{"http", "http", false},
+		{"https", "https", false},
+		{"HTTPS", "https", false},
+		{"  https  ", "https", false},
+		// "auto" is an explicit spelling of the default, normalized away so one
+		// internal representation carries the meaning.
+		{"auto", "", false},
+		// Rejected rather than defaulted: silently probing HTTP for an app the
+		// user declared as HTTPS is precisely the 10-attempt timeout the setting
+		// exists to prevent.
+		{"ftp", "", true},
+		{"HTTPs://", "", true},
+		{"tls", "", true},
+	} {
+		cfg := &models.Config{App: models.AppConfig{HealthCheckScheme: tc.in}}
+		err := applyNonPortDefaults(cfg)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("scheme %q must be rejected", tc.in)
+			} else if !strings.Contains(err.Error(), "health_check_scheme") {
+				t.Errorf("scheme %q: error must name the field, got %v", tc.in, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("scheme %q: unexpected error %v", tc.in, err)
+			continue
+		}
+		if cfg.App.HealthCheckScheme != tc.want {
+			t.Errorf("scheme %q normalized to %q, want %q", tc.in, cfg.App.HealthCheckScheme, tc.want)
+		}
+	}
+}
