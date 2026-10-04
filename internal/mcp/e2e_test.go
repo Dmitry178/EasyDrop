@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -271,4 +272,64 @@ func TestE2EGetLogsRequiresAppName(t *testing.T) {
 	if !res.IsError {
 		t.Errorf("blank app_name must be rejected")
 	}
+}
+
+func TestE2ETeardownRejectsBlankAppName(t *testing.T) {
+	sess := e2eClient(t)
+	res := callTool(t, sess, "teardown_app", map[string]any{"app_name": " "})
+	if !res.IsError {
+		t.Errorf("blank app_name must be rejected")
+	}
+}
+
+// TestE2ETeardownAdvertisesIngressRemoval pins the tool description against the
+// behaviour. `teardown_app` now deletes the nginx vhost, which is a materially
+// bigger effect than "remove the deployment" – an agent that read the old
+// wording would not think to confirm with the user before calling it.
+// inputSchemaProperties extracts the property map from a tool's input schema,
+// which the SDK hands back as an untyped value on the client side.
+func inputSchemaProperties(t *testing.T, tl *sdk.Tool) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(tl.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal input schema: %v", err)
+	}
+	var decoded struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode input schema: %v", err)
+	}
+	return decoded.Properties
+}
+
+func TestE2ETeardownAdvertisesIngressRemoval(t *testing.T) {
+	sess := e2eClient(t)
+	res, err := sess.ListTools(context.Background(), &sdk.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tl := range res.Tools {
+		if tl.Name != "teardown_app" {
+			continue
+		}
+		for _, want := range []string{"vhost", "purge", "certbot", "volumes"} {
+			if !strings.Contains(tl.Description, want) {
+				t.Errorf("teardown_app description must mention %q: %q", want, tl.Description)
+			}
+		}
+		// The schema description is what the model reads for the argument itself.
+		props := inputSchemaProperties(t, tl)
+		raw, ok := props["purge"]
+		if !ok {
+			t.Fatal("teardown_app must expose a purge argument")
+		}
+		prop, _ := raw.(map[string]any)
+		desc, _ := prop["description"].(string)
+		if !strings.Contains(desc, "Let's Encrypt") {
+			t.Errorf("purge must state that ACME certificates are never deleted, got %q", desc)
+		}
+		return
+	}
+	t.Fatal("teardown_app not found")
 }
