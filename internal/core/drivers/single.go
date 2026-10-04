@@ -165,7 +165,7 @@ func (d *SingleDriver) deployDirect(ctx context.Context, app *models.Application
 	if _, _, _, err := d.exec.ExecCommand(ctx, run); err != nil {
 		return fmt.Errorf("start container %s: %w", active, err)
 	}
-	if err := d.probe(ctx, hostPort, cfg.App.HealthCheckPath, "active"); err != nil {
+	if err := d.probe(ctx, hostPort, cfg.App.HealthCheckPath, cfg.App.HealthCheckScheme, "active"); err != nil {
 		return err // container left running for inspection
 	}
 	if err := d.updateIngress(ctx, cfg.Nginx.Domain, hostPort); err != nil {
@@ -222,7 +222,7 @@ func (d *SingleDriver) deployBlueGreen(ctx context.Context, app *models.Applicat
 		return fmt.Errorf("start staging container %s: %w", green, err)
 	}
 
-	if err := d.probe(ctx, greenPort, cfg.App.HealthCheckPath, "staging"); err != nil {
+	if err := d.probe(ctx, greenPort, cfg.App.HealthCheckPath, cfg.App.HealthCheckScheme, "staging"); err != nil {
 		_, _, _, _ = d.exec.ExecCommand(ctx, "docker rm -f "+q(green))
 		return err
 	}
@@ -299,7 +299,7 @@ func (d *SingleDriver) Rollback(ctx context.Context, app *models.Application) er
 	if err := d.updateIngress(ctx, cfg.Nginx.Domain, port); err != nil {
 		return fmt.Errorf("update ingress after rollback: %w", err)
 	}
-	if err := d.probe(ctx, port, cfg.App.HealthCheckPath, "restored"); err != nil {
+	if err := d.probe(ctx, port, cfg.App.HealthCheckPath, cfg.App.HealthCheckScheme, "restored"); err != nil {
 		return err // restored container left running – last resort stays up
 	}
 	d.logf("%s rolled back on host port %d", active, port)
@@ -455,32 +455,85 @@ func (d *SingleDriver) containerHostPort(ctx context.Context, containerName stri
 	return 0, fmt.Errorf("container %s exists but publishes no host port", containerName)
 }
 
-// probe polls http://localhost:[port][path] until a 200 arrives or the
-// attempts run out. Any error or non-200 is a miss, not a failure. role
-// labels the container under test in messages ("staging", "active",
-// "restored").
-func (d *SingleDriver) probe(ctx context.Context, port int, healthPath, role string) error {
+// probe polls the app's health endpoint until it answers 200 or the attempts run
+// out. Any error or non-200 is a miss, not a failure. role labels the container
+// under test in messages ("staging", "active", "restored").
+//
+// scheme follows app.health_check_scheme (M20): "http" or "https" pins the
+// probe, empty tries HTTP and falls back to HTTPS inside the same attempt. The
+// fallback is what lets an app that answers only over TLS be deployed at all –
+// before it, such an app failed every attempt and reported a healthcheck timeout
+// that had nothing to do with the app being broken.
+//
+// The fallback is triggered by the response, never by blindly following
+// redirects. `curl -L` would also "fix" an app whose health path redirects to
+// some unrelated 200 page, which is a false pass and the worse failure.
+func (d *SingleDriver) probe(ctx context.Context, port int, healthPath, scheme, role string) error {
 	if healthPath == "" {
 		healthPath = "/"
 	}
-	target := fmt.Sprintf("http://localhost:%d%s", port, healthPath)
+	schemes := probeSchemes(scheme)
 	max := d.maxProbes()
 	for attempt := 1; attempt <= max; attempt++ {
 		if ctx.Err() != nil {
-			return fmt.Errorf("deploy cancelled while probing %s: %w", target, ctx.Err())
+			return fmt.Errorf("deploy cancelled while probing %s: %w", probeTarget(schemes[0], port, healthPath), ctx.Err())
 		}
-		out, _, _, err := d.exec.ExecCommand(ctx,
-			"curl -fsS -o /dev/null -w '%{http_code}' "+q(target))
-		if err == nil && strings.TrimSpace(out) == "200" {
-			d.logf("healthcheck %s OK (attempt %d/%d)", target, attempt, max)
-			return nil
+		for _, s := range schemes {
+			ok, err := d.probeOnce(ctx, s, port, healthPath)
+			if err != nil {
+				return err
+			}
+			if ok {
+				d.logf("healthcheck %s OK (%s, attempt %d/%d)",
+					probeTarget(s, port, healthPath), s, attempt, max)
+				return nil
+			}
+			d.logf("healthcheck %s miss (%s), retrying...", probeTarget(s, port, healthPath), s)
 		}
-		d.logf("healthcheck %s miss (attempt %d/%d), retrying...", target, attempt, max)
 		if attempt < max && !sleepCtx(ctx, d.probeInterval()) {
-			return fmt.Errorf("deploy cancelled while probing %s: %w", target, ctx.Err())
+			return fmt.Errorf("deploy cancelled while probing %s: %w", probeTarget(schemes[0], port, healthPath), ctx.Err())
 		}
 	}
-	return fmt.Errorf("%s failed healthcheck %s after %d attempts (production left untouched)", role, target, max)
+	return fmt.Errorf("%s failed healthcheck %s (tried %s) after %d attempts (production left untouched)",
+		role, probeTarget(schemes[0], port, healthPath), strings.Join(schemes, " and "), max)
+}
+
+// probeOnce performs a single request and reports whether it answered 200.
+func (d *SingleDriver) probeOnce(ctx context.Context, scheme string, port int, healthPath string) (bool, error) {
+	target := probeTarget(scheme, port, healthPath)
+	// -k on https: the probe connects to localhost, so the certificate inside the
+	// container is issued for the domain and would fail verification even when
+	// it is perfectly valid. What this probe is testing is whether the app
+	// answers, not whether it holds a trusted certificate – nginx terminates the
+	// user's TLS in front of it.
+	curl := "curl -fsS -o /dev/null -w '%{http_code}'"
+	if scheme == "https" {
+		curl = "curl -fsSk -o /dev/null -w '%{http_code}'"
+	}
+	out, _, _, err := d.exec.ExecCommand(ctx, curl+" "+q(target))
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("deploy cancelled while probing %s: %w", target, ctx.Err())
+	}
+	if err != nil {
+		return false, nil // connection refused / TLS handshake refused: a miss
+	}
+	return strings.TrimSpace(out) == "200", nil
+}
+
+// probeSchemes resolves the configured scheme into the ordered list to try.
+func probeSchemes(scheme string) []string {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "https":
+		return []string{"https"}
+	case "http":
+		return []string{"http"}
+	default:
+		return []string{"http", "https"}
+	}
+}
+
+func probeTarget(scheme string, port int, healthPath string) string {
+	return fmt.Sprintf("%s://localhost:%d%s", scheme, port, healthPath)
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {
