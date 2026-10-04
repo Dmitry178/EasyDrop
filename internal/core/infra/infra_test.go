@@ -381,3 +381,219 @@ func tempPaths(dir string) string {
 	}
 	return sb.String()
 }
+
+// --- ingress removal (M19) ----------------------------------------------
+
+// removalFake scripts a teardown of the given domain's vhost.
+func removalFake(vhostExists bool) *catFake {
+	f := &catFake{}
+	f.noVhost = !vhostExists
+	f.script = map[string]error{}
+	for _, c := range []string{
+		"sudo rm -f '/etc/nginx/sites-enabled/localhost'",
+		"sudo rm -f '/etc/nginx/sites-available/localhost'",
+		"sudo nginx -t",
+		"sudo systemctl reload nginx",
+	} {
+		f.script[c] = nil
+	}
+	return f
+}
+
+func TestRemoveIngressDeletesVhostAndReloads(t *testing.T) {
+	f := removalFake(true)
+	m := NewNginxManager(f)
+	m.Out = &bytes.Buffer{}
+
+	res, err := m.RemoveIngress(context.Background(), "localhost")
+	if err != nil {
+		t.Fatalf("RemoveIngress: %v", err)
+	}
+	if !res.Removed || !res.Reloaded {
+		t.Errorf("want removed+reloaded, got %+v", res)
+	}
+	// The enabled symlink goes first: it is what nginx reads, so removing the
+	// real file first would leave a dangling link and break nginx -t.
+	rmLink := indexOf(f.calls, "sites-enabled/localhost")
+	rmFile := indexOf(f.calls, "sites-available/localhost")
+	if rmLink < 0 || rmFile < 0 || rmLink > rmFile {
+		t.Errorf("both files must be removed, symlink first; ran: %v", f.calls)
+	}
+	nginxTest := indexOf(f.calls, "sudo nginx -t")
+	reload := indexOf(f.calls, "reload nginx")
+	if nginxTest < rmFile {
+		t.Errorf("the vhost must be gone before the config test, ran: %v", f.calls)
+	}
+	if reload < nginxTest {
+		t.Errorf("reload must follow the config test, ran: %v", f.calls)
+	}
+}
+
+func TestRemoveIngressNeverReloadsBrokenConfig(t *testing.T) {
+	// Reloading a config nginx rejected takes down every other site on the host.
+	f := removalFake(true)
+	f.script["sudo nginx -t"] = fmt.Errorf("fake: emerg")
+	f.script["sudo systemctl reload nginx"] = fmt.Errorf("must not run")
+	m := NewNginxManager(f)
+	m.Out = &bytes.Buffer{}
+
+	res, err := m.RemoveIngress(context.Background(), "localhost")
+	if err != nil {
+		t.Fatalf("a failed config test is reported, not returned as an error: %v", err)
+	}
+	if !res.Removed {
+		t.Error("the files were deleted, and the result must say so")
+	}
+	if res.Reloaded {
+		t.Error("nginx must not be reloaded after a failed config test")
+	}
+	if res.ReloadReason == "" {
+		t.Error("a non-reload must explain itself – the domain still answers 502 until nginx reloads")
+	}
+}
+
+func TestRemoveIngressIsIdempotent(t *testing.T) {
+	f := removalFake(false)
+	m := NewNginxManager(f)
+	m.Out = &bytes.Buffer{}
+
+	res, err := m.RemoveIngress(context.Background(), "localhost")
+	if err != nil {
+		t.Fatalf("a missing vhost is not an error: %v", err)
+	}
+	if res.Removed {
+		t.Errorf("nothing was removed, the result must not claim otherwise: %+v", res)
+	}
+	if f.ran("rm -f") {
+		t.Errorf("no removal commands may run when there is no vhost: %v", f.calls)
+	}
+	if f.ran("reload nginx") {
+		t.Errorf("a no-op teardown must not reload nginx: %v", f.calls)
+	}
+}
+
+func TestRemoveIngressRejectsBadDomain(t *testing.T) {
+	f := removalFake(true)
+	m := NewNginxManager(f)
+	m.Out = &bytes.Buffer{}
+	for _, domain := range []string{"evil.com; rm -rf /", "a b.com", ""} {
+		if _, err := m.RemoveIngress(context.Background(), domain); err == nil {
+			t.Errorf("domain %q must be refused", domain)
+		}
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("no host command on invalid input: %v", f.calls)
+	}
+}
+
+func TestRemoveIngressPropagatesRmFailure(t *testing.T) {
+	f := removalFake(true)
+	f.script["sudo rm -f '/etc/nginx/sites-available/localhost'"] = fmt.Errorf("fake: read-only fs")
+	m := NewNginxManager(f)
+	m.Out = &bytes.Buffer{}
+	if _, err := m.RemoveIngress(context.Background(), "localhost"); err == nil {
+		t.Fatal("a failed removal must be reported, not swallowed")
+	}
+	if f.ran("reload nginx") {
+		t.Errorf("nothing may be reloaded after a failed removal: %v", f.calls)
+	}
+}
+
+// --- TLSStatus (status enrichment, M19) ---------------------------------
+
+// nginxDump renders an `nginx -T` style dump with one file section.
+func nginxDump(path, body string) string {
+	return "# configuration file " + path + ":\n" + body + "\n"
+}
+
+func TestTLSStatusReadsWhatNginxServes(t *testing.T) {
+	f := &catFake{script: map[string]error{}, stdout: map[string]string{}}
+	f.stdout["sudo nginx -T"] = nginxDump("/etc/nginx/sites-available/localhost",
+		"server {\n    listen 80;\n    server_name localhost;\n}\nserver {\n    listen 443 ssl;\n    ssl_certificate /etc/nginx/ssl/localhost.crt;\n}\n")
+	f.existing = mustGenerateCert(t, "localhost", certValidity)
+	m := NewNginxManagerTLS(f)
+	m.Out = &bytes.Buffer{}
+
+	got := m.TLSStatus(context.Background(), "localhost")
+	if !strings.Contains(got, "self-signed") || !strings.Contains(got, "expires") {
+		t.Errorf("want the self-signed certificate with its expiry, got %q", got)
+	}
+}
+
+func TestTLSStatusEmptyWhenNoTLS(t *testing.T) {
+	f := &catFake{script: map[string]error{}, stdout: map[string]string{}}
+	f.stdout["sudo nginx -T"] = nginxDump("/etc/nginx/sites-available/localhost",
+		"server {\n    listen 80;\n    server_name localhost;\n}\n")
+	m := NewNginxManager(f)
+	m.Out = &bytes.Buffer{}
+	if got := m.TLSStatus(context.Background(), "localhost"); got != "" {
+		t.Errorf("a plain-HTTP vhost has no TLS status, got %q", got)
+	}
+}
+
+func TestTLSStatusEmptyWhenNoVhost(t *testing.T) {
+	// A vhost removed by something else: the app may well be configured for TLS,
+	// so an empty answer ("cannot tell") must not read as "no TLS".
+	f := &catFake{script: map[string]error{}, stdout: map[string]string{}}
+	f.stdout["sudo nginx -T"] = nginxDump("/etc/nginx/sites-available/other.com",
+		"server {\n    listen 443 ssl;\n}\n")
+	m := NewNginxManagerTLS(f)
+	m.Out = &bytes.Buffer{}
+	if got := m.TLSStatus(context.Background(), "localhost"); got != "" {
+		t.Errorf("another site's vhost says nothing about this domain, got %q", got)
+	}
+}
+
+func TestTLSStatusIgnoresOtherSitesListen443(t *testing.T) {
+	f := &catFake{script: map[string]error{}, stdout: map[string]string{}}
+	f.stdout["sudo nginx -T"] = nginxDump("/etc/nginx/sites-available/other.com",
+		"server {\n    listen 443 ssl;\n}\n") +
+		nginxDump("/etc/nginx/sites-available/localhost", "server {\n    listen 80;\n}\n")
+	m := NewNginxManagerTLS(f)
+	m.Out = &bytes.Buffer{}
+	if got := m.TLSStatus(context.Background(), "localhost"); got != "" {
+		t.Errorf("another site's TLS must not be attributed to this domain, got %q", got)
+	}
+}
+
+func TestTLSStatusLetsEncrypt(t *testing.T) {
+	f := &catFake{script: map[string]error{}, stdout: map[string]string{}}
+	f.stdout["sudo nginx -T"] = nginxDump("/etc/nginx/sites-available/example.com",
+		"server {\n    listen 443 ssl;\n}\n")
+	m := NewNginxManager(f)
+	m.Out = &bytes.Buffer{}
+	if got := m.TLSStatus(context.Background(), "example.com"); !strings.Contains(got, "Let's Encrypt") {
+		t.Errorf("ACME vhost must be reported as Let's Encrypt, got %q", got)
+	}
+}
+
+func TestTLSStatusEmptyWhenNginxUnreadable(t *testing.T) {
+	// A host without nginx, or without permission for `nginx -T`, is legitimate.
+	// status must not fail over a cosmetic detail.
+	f := &catFake{}
+	f.script = map[string]error{"sudo nginx -T": fmt.Errorf("nginx: command not found")}
+	m := NewNginxManagerTLS(f)
+	m.Out = &bytes.Buffer{}
+	if got := m.TLSStatus(context.Background(), "localhost"); got != "" {
+		t.Errorf("want no answer, got %q", got)
+	}
+}
+
+func TestServesTLS(t *testing.T) {
+	for _, tc := range []struct {
+		block string
+		want  bool
+	}{
+		{"server {\n listen 443 ssl;\n}", true},
+		{"server {\n listen 443 ssl http2;\n}", true},
+		{"server {\n listen 443;\n}", false},
+		{"server {\n listen 80;\n}", false},
+		{"server {\n listen 8443 ssl;\n}", false},
+		{"# listen 443 ssl; commented out", false},
+		{"", false},
+	} {
+		if got := servesTLS(tc.block); got != tc.want {
+			t.Errorf("servesTLS(%q) = %v, want %v", tc.block, got, tc.want)
+		}
+	}
+}
