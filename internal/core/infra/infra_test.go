@@ -3,7 +3,14 @@ package infra
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -556,14 +563,146 @@ func TestTLSStatusIgnoresOtherSitesListen443(t *testing.T) {
 	}
 }
 
-func TestTLSStatusLetsEncrypt(t *testing.T) {
+// acmeCert renders a certificate that is NOT self-signed (issuer != subject),
+// the way an ACME-issued one is, so describeCert must not label it self-signed.
+// Built here rather than through generateSelfSigned because that function is
+// deliberately self-signing; adding an issuer knob to production code would
+// exist only for this test.
+func acmeCert(t *testing.T, domain string, validFor time.Duration) string {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Test ACME CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(10 * certValidity),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := &x509.Certificate{
+		SerialNumber:          big.NewInt(42),
+		Subject:               pkix.Name{CommonName: domain},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(validFor),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{domain},
+	}
+	// Signed by the CA, so RawIssuer != RawSubject the way a real issued
+	// certificate is – self-signing the leaf would defeat the whole test.
+	der, err := x509.CreateCertificate(rand.Reader, leaf, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+// tlsDumpFor builds an `nginx -T` dump serving certPath for domain.
+func tlsDumpFor(domain, certPath string) string {
+	return nginxDump(nginxAvailable+domain,
+		"server {\n    listen 443 ssl;\n    ssl_certificate "+certPath+";\n"+
+			"    ssl_certificate_key "+certPath+";\n}\n")
+}
+
+func TestTLSStatusReportsACMECertificateExpiry(t *testing.T) {
+	// M20 closed an asymmetry: the Let's Encrypt path used to report only "TLS"
+	// with no date, because nothing read the certificate nginx points at. It does
+	// now, in both modes, from the served file.
 	f := &catFake{script: map[string]error{}, stdout: map[string]string{}}
-	f.stdout["sudo nginx -T"] = nginxDump("/etc/nginx/sites-available/example.com",
-		"server {\n    listen 443 ssl;\n}\n")
+	f.stdout["sudo nginx -T"] = tlsDumpFor("example.com", "/etc/letsencrypt/live/example.com/fullchain.pem")
+	f.stdout["sudo cat '/etc/letsencrypt/live/example.com/fullchain.pem'"] = acmeCert(t, "example.com", certValidity)
 	m := NewNginxManager(f)
 	m.Out = &bytes.Buffer{}
-	if got := m.TLSStatus(context.Background(), "example.com"); !strings.Contains(got, "Let's Encrypt") {
-		t.Errorf("ACME vhost must be reported as Let's Encrypt, got %q", got)
+
+	got := m.TLSStatus(context.Background(), "example.com")
+	if !strings.Contains(got, "expires") {
+		t.Errorf("an ACME certificate must report its expiry, got %q", got)
+	}
+	if strings.Contains(got, "self-signed") {
+		t.Errorf("an ACME certificate must not be labelled self-signed, got %q", got)
+	}
+}
+
+func TestTLSStatusFlagsCertificateNotCoveringDomain(t *testing.T) {
+	// The failure that looks like nothing at all: nginx starts, the deploy
+	// healthchecks green, and only the client complains. Reporting it here is
+	// the whole point of reading the file instead of the config.
+	f := &catFake{script: map[string]error{}, stdout: map[string]string{}}
+	f.stdout["sudo nginx -T"] = tlsDumpFor("api.example.com", "/etc/nginx/ssl/api.example.com.crt")
+	f.stdout["sudo cat '/etc/nginx/ssl/api.example.com.crt'"] = mustGenerateCert(t, "other.example.com", certValidity)
+	m := NewNginxManagerTLS(f)
+	m.Out = &bytes.Buffer{}
+
+	got := m.TLSStatus(context.Background(), "api.example.com")
+	if !strings.Contains(got, "DOES NOT COVER") {
+		t.Errorf("a certificate naming another host must be flagged, got %q", got)
+	}
+}
+
+func TestTLSStatusFlagsExpiringCertificate(t *testing.T) {
+	f := &catFake{script: map[string]error{}, stdout: map[string]string{}}
+	f.stdout["sudo nginx -T"] = tlsDumpFor("localhost", "/etc/nginx/ssl/localhost.crt")
+	f.stdout["sudo cat '/etc/nginx/ssl/localhost.crt'"] = mustGenerateCert(t, "localhost", 20*24*time.Hour)
+	m := NewNginxManagerTLS(f)
+	m.Out = &bytes.Buffer{}
+	if got := m.TLSStatus(context.Background(), "localhost"); !strings.Contains(got, "EXPIRING") {
+		t.Errorf("a certificate inside the renewal window must be flagged, got %q", got)
+	}
+}
+
+func TestTLSStatusReportsUnreadableCertificate(t *testing.T) {
+	f := &catFake{script: map[string]error{}, stdout: map[string]string{}}
+	f.stdout["sudo nginx -T"] = tlsDumpFor("localhost", "/etc/nginx/ssl/localhost.crt")
+	f.stdout["sudo cat '/etc/nginx/ssl/localhost.crt'"] = "not a certificate"
+	m := NewNginxManagerTLS(f)
+	m.Out = &bytes.Buffer{}
+	if got := m.TLSStatus(context.Background(), "localhost"); !strings.Contains(got, "unreadable") {
+		t.Errorf("an unparseable certificate must be named, got %q", got)
+	}
+}
+
+func TestTLSStatusReportsVhostWithoutCertPath(t *testing.T) {
+	f := &catFake{script: map[string]error{}, stdout: map[string]string{}}
+	f.stdout["sudo nginx -T"] = nginxDump(nginxAvailable+"localhost", "server {\n    listen 443 ssl;\n}\n")
+	m := NewNginxManagerTLS(f)
+	m.Out = &bytes.Buffer{}
+	if got := m.TLSStatus(context.Background(), "localhost"); got == "" {
+		t.Error("a TLS vhost without a readable certificate path must still say something")
+	}
+}
+
+func TestSSLCertificatePath(t *testing.T) {
+	for _, tc := range []struct {
+		block string
+		want  string
+	}{
+		{"  ssl_certificate /etc/letsencrypt/live/x/fullchain.pem;", "/etc/letsencrypt/live/x/fullchain.pem"},
+		{"  ssl_certificate /a/b.crt;", "/a/b.crt"},
+		{"  ssl_certificate /a/b.crt", "/a/b.crt"},
+		{"  ssl_certificate;", ""},
+		{"", ""},
+	} {
+		if got := sslCertificatePath(tc.block); got != tc.want {
+			t.Errorf("sslCertificatePath(%q) = %q, want %q", tc.block, got, tc.want)
+		}
 	}
 }
 
