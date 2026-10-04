@@ -126,33 +126,6 @@ func (c *SelfSignedCertifier) EnsureCert(ctx context.Context, domain string) (Ce
 	return CertResult{CertPath: certPath, KeyPath: keyPath, Created: true, NotAfter: notAfter}, nil
 }
 
-// Describe reports the human-readable state of the certificate on disk for
-// domain, without changing anything. Used by TLSStatus so `easydrop status`
-// can answer "am I actually behind TLS, and until when" from the file nginx is
-// really serving rather than from the configured intent.
-//
-// A missing or unreadable certificate is reported, not swallowed: "certificate
-// missing" is precisely the thing a user needs to hear, and returning "" would
-// be indistinguishable from "TLS not configured".
-func (c *SelfSignedCertifier) Describe(ctx context.Context, domain string) (string, error) {
-	if err := models.ValidateCertifiableDomain(domain); err != nil {
-		return "", err
-	}
-	certPath, _, _ := certPaths(domain)
-	existing, err := c.readCert(ctx, certPath)
-	if err != nil {
-		return "self-signed, certificate unreadable", nil
-	}
-	if existing == nil {
-		return "self-signed, certificate missing", nil
-	}
-	state := "self-signed"
-	if time.Now().Add(renewBefore).After(existing.NotAfter) {
-		state += ", EXPIRING"
-	}
-	return fmt.Sprintf("%s, expires %s", state, existing.NotAfter.Format("2006-01-02")), nil
-}
-
 // RemoveCert deletes the self-signed certificate and key for domain.
 //
 // It exists only for this mode, and only for an explicit purge (M19). Two rules
