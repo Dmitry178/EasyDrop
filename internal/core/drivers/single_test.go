@@ -725,3 +725,110 @@ func TestDeployDirectFailsFastOnBusyHostPort(t *testing.T) {
 		t.Errorf("no container may be started on a busy port, ran: %v", f.calls)
 	}
 }
+
+// --- healthcheck scheme (M20) -------------------------------------------
+
+func TestProbeSchemes(t *testing.T) {
+	for _, tc := range []struct {
+		configured string
+		want       []string
+	}{
+		{"", []string{"http", "https"}},
+		{"auto", []string{"http", "https"}},
+		{"http", []string{"http"}},
+		{"HTTP", []string{"http"}},
+		{"https", []string{"https"}},
+		{"  https  ", []string{"https"}},
+	} {
+		got := probeSchemes(tc.configured)
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("probeSchemes(%q) = %v, want %v", tc.configured, got, tc.want)
+		}
+	}
+}
+
+func TestProbeFallsBackToHTTPS(t *testing.T) {
+	// The case that used to be impossible: an app that answers only over TLS.
+	// A plain-HTTP-only probe exhausted its attempts and reported a healthcheck
+	// timeout for an app that was perfectly healthy.
+	f := &queueFake{}
+	f.on("curl -fsS ", errRespMsg("connection refused")) // http: no listener
+	f.onSteady("curl -fsSk ", okResp("200"))             // https: answers
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	d.MaxProbes = 3
+	d.ProbeInterval = time.Millisecond
+	if err := d.probe(context.Background(), 8443, "/health", "", "staging"); err != nil {
+		t.Fatalf("probe() must fall back to https, got: %v", err)
+	}
+	if !f.ran("curl -fsSk -o /dev/null -w '%{http_code}' 'https://localhost:8443/health'") {
+		t.Errorf("the https probe must use -k, ran: %v", f.calls)
+	}
+	// The fallback is per attempt, not a global switch: http is still tried
+	// first on later attempts so a container that gains a plain listener is
+	// picked up again.
+	if got := countCalls(f.calls, "curl -fsS "); got != 1 {
+		t.Errorf("http must be retried on the next attempt, ran %d times", got)
+	}
+}
+
+func TestProbePinnedHTTPSkipsHTTP(t *testing.T) {
+	f := &queueFake{}
+	f.onSteady("curl -fsSk ", okResp("200"))
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	d.MaxProbes = 2
+	d.ProbeInterval = time.Millisecond
+	if err := d.probe(context.Background(), 8443, "/", "https", "staging"); err != nil {
+		t.Fatalf("probe(): %v", err)
+	}
+	if f.ran("curl -fsS -o /dev/null") {
+		t.Errorf("an explicit https scheme must not try http, ran: %v", f.calls)
+	}
+}
+
+func TestProbePinnedHTTPSkipsHTTPOnFailure(t *testing.T) {
+	f := &queueFake{}
+	f.onSteady("curl -fsSk ", errRespMsg("handshake failure"))
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	d.MaxProbes = 2
+	d.ProbeInterval = time.Millisecond
+	err := d.probe(context.Background(), 8443, "/", "https", "staging")
+	if err == nil {
+		t.Fatal("expected a healthcheck failure")
+	}
+	if f.ran("curl -fsS -o /dev/null") {
+		t.Errorf("an explicit https scheme must not silently fall back, ran: %v", f.calls)
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("the error must name what was tried, got: %v", err)
+	}
+}
+
+// TestProbeDoesNotFollowRedirects pins the deliberate choice not to use curl -L.
+// Following every redirect would make an app pass by redirecting its health path
+// at some unrelated 200 page – a false pass, which is worse than a failure.
+func TestProbeDoesNotFollowRedirects(t *testing.T) {
+	f := &queueFake{}
+	f.onSteady("curl -fsS ", okResp("301"))
+	f.onSteady("curl -fsSk ", okResp("404"))
+	d := NewSingleDriver(f)
+	d.Out = &bytes.Buffer{}
+	d.MaxProbes = 1
+	d.ProbeInterval = time.Millisecond
+	if err := d.probe(context.Background(), 8080, "/health", "http", "staging"); err == nil {
+		t.Fatal("a 301 must not count as healthy")
+	}
+	for _, c := range f.calls {
+		if strings.Contains(c, "-L") || strings.Contains(c, "--location") {
+			t.Errorf("the probe must not follow redirects, ran: %v", f.calls)
+		}
+	}
+}
+
+func TestProbeTargetIncludesPathAndPort(t *testing.T) {
+	if got := probeTarget("https", 8443, "/healthz"); got != "https://localhost:8443/healthz" {
+		t.Errorf("probeTarget() = %q", got)
+	}
+}
