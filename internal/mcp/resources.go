@@ -13,6 +13,15 @@ const troubleshootingDoc = `# EasyDrop troubleshooting runbook
 ## Container fails healthcheck (deploy aborts, production untouched)
 - Wrong internal port: app must listen on app.port (single-port constraint, OD-01).
 - Wrong health_check_path: must return HTTP 200.
+- The app answers only over HTTPS, or redirects everything to HTTPS: the probe
+  tries HTTP and falls back to HTTPS automatically (M20). Pin it with
+  app.health_check_scheme = "https" to skip the wasted first attempt, or set it
+  to "http" when the app must NOT be probed over TLS.
+- Wrong health_check_scheme: only "http", "https" and "auto"/empty are accepted;
+  anything else is rejected at parse time, before any build.
+- The probe never follows redirects (no curl -L). A 301 is a miss on purpose:
+  following it would let the app pass by bouncing the probe at some unrelated
+  200 page - a silent false pass.
 - Slow cold start: raise probing via driver tunables (2s x 10 default).
 - Staging leftovers: 'docker ps -a' for *-green, 'teardown' removes them.
 
