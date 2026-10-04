@@ -41,8 +41,9 @@ var schemaMeta = map[string]fieldMeta{
 	"driver.compose_file":   {desc: "compose file for compose/swarm drivers", def: "docker-compose.yml"},
 	"driver.blue_green":     {desc: "zero-downtime Blue-Green swaps, single driver only (deploy --blue-green forces true)", def: false},
 	"nginx.domain":          {desc: "public domain for reverse proxy + TLS (empty skips ingress)"},
-	"nginx.ssl":             {desc: "provision Let's Encrypt certificates"},
-	"nginx.email":           {desc: "ACME contact; empty registers without email"},
+	"nginx.ssl":             {desc: "serve TLS on the managed vhost (requires nginx.domain)"},
+	"nginx.self_signed":     {desc: "generate a local self-signed certificate instead of Let's Encrypt; requires nginx.ssl, for local/dev hosts and internal DNS", def: false},
+	"nginx.email":           {desc: "ACME contact; empty registers without email – ignored when self_signed is set"},
 }
 
 // GenerateSchema renders the easydrop.toml JSON Schema (draft-07) directly
