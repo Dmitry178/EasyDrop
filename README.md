@@ -480,10 +480,28 @@ make verify     # CI gate: gofmt check + go vet + tests
 make test-race  # tests under the race detector
 make cover      # coverage report -> bin/coverage.out
 make release    # cross-compile linux/darwin/windows × amd64/arm64 + SHA256SUMS
+make platforms  # list the release platforms, one per line
+make build-platform PLATFORM=darwin/arm64    # compile just one triple
+make check-platforms    # fail if the CI matrix and the Makefile disagree
 make smoke      # end-to-end deploy of a throwaway app on the local docker daemon
 ```
 
 Override the stamped version explicitly for releases: `make build VERSION=1.2.3`.
+
+**Continuous integration.** [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+runs on every push and pull request:
+
+| Job | What it proves |
+| --- | --- |
+| `verify` | gofmt, `go vet`, the test suite, and the race detector – the authoritative gate |
+| `smoke` | a real end-to-end deploy on a runner with Docker |
+| `build` | all six triples (`linux`/`darwin`/`windows` × `amd64`/`arm64`) compile, one job each so a break names the platform |
+| `test-native` | the suite runs natively on Linux, macOS and Windows – a cross-compiled binary is never *run* by the build job |
+| `release` | on a `v*` tag: every platform plus `SHA256SUMS`, attached as one artifact |
+
+The platform list lives in the `Makefile` (`PLATFORMS`), and the workflow repeats
+it; `make check-platforms` runs in `verify` and fails the build if the two ever
+drift apart. Publishing to a release page is deliberately left to a human.
 
 > **Snap-docker hosts:** a snap-confined daemon has its own mount namespace – it cannot see host `/tmp`, cannot read hidden (`dot-`) files in `$HOME`, and resolves `$HOME` to a snap path inside its own commands. EasyDrop detects this, fails fast with an actionable message, and automatically keeps Compose/Swarm state in a non-hidden `~/easydrop` directory. To build, set `EASYDROP_STAGING_BASE` to a **non-hidden** path under `$HOME` (e.g. `~/easydrop-staging`); `make smoke` does this automatically. Hosts bootstrapped by easydrop use apt Docker and never hit these limits. Full reference: [`docs/implementation.md §10`](docs/implementation.md).
 

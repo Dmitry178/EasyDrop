@@ -494,10 +494,28 @@ make verify     # CI-гейт: проверка gofmt + go vet + тесты
 make test-race  # тесты с детектором гонок
 make cover      # отчёт о покрытии -> bin/coverage.out
 make release    # кросс-компиляция linux/darwin/windows × amd64/arm64 + SHA256SUMS
+make platforms  # список релизных платформ, по одной в строке
+make build-platform PLATFORM=darwin/arm64    # собрать только одну тройку
+make check-platforms    # упасть, если матрица CI и Makefile разошлись
 make smoke      # сквозной деплой одноразового приложения на локальном docker
 ```
 
 Для релизов версию можно задать явно: `make build VERSION=1.2.3`.
+
+**Непрерывная интеграция.** [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+запускается на каждом пуше и pull request:
+
+| Job | Что доказывает |
+| --- | --- |
+| `verify` | gofmt, `go vet`, тесты и детектор гонок – главный гейт |
+| `smoke` | настоящий сквозной деплой на раннере с Docker |
+| `build` | компилируются все шесть троек (`linux`/`darwin`/`windows` × `amd64`/`arm64`), по job на каждую, чтобы поломка называла платформу |
+| `test-native` | тесты нативно на Linux, macOS и Windows – кросс-компилированный бинарник job `build` никогда не *запускает* |
+| `release` | по тегу `v*`: все платформы плюс `SHA256SUMS` одним артефактом |
+
+Список платформ живёт в `Makefile` (`PLATFORMS`), а workflow его повторяет;
+`make check-platforms` выполняется в `verify` и роняет сборку, если они
+разойдутся. Публикация на страницу релиза намеренно оставлена человеку.
 
 > **Хосты со snap-docker:** snap-демон работает в своём mount namespace – не видит хостовый `/tmp`, не читает скрытые (`dot-`) файлы в `$HOME` и подставляет свой `$HOME` внутри своих команд. EasyDrop это определяет, подсказывает причину и сам хранит состояние Compose/Swarm в неприватном каталоге `~/easydrop`. Чтобы собирать образы, выставьте `EASYDROP_STAGING_BASE` на **неприватный** путь внутри `$HOME` (например `~/easydrop-staging`); `make smoke` делает это автоматически. Хосты, подготовленные самим easydrop, используют apt-Docker и этих ограничений не имеют. Подробности: [`docs/implementation.md §10`](docs/implementation.md).
 
