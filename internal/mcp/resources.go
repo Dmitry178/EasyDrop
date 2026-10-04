@@ -30,6 +30,21 @@ const troubleshootingDoc = `# EasyDrop troubleshooting runbook
 - A stale *-green container from a failed deploy holds a port too; 'teardown'
   removes it.
 
+## nginx.ssl = true did nothing (localhost / internal host)
+- Let's Encrypt needs a publicly resolvable domain and a reachable port 80. For
+  localhost or internal DNS that is impossible, so add self_signed = true to the
+  [nginx] block and set domain = "localhost" (or your internal name).
+- easydrop then generates the certificate itself (P-256, with SAN), installs it
+  in /etc/nginx/ssl/ with the key at 0600, and serves :443 itself. Port 80 keeps
+  proxying, so http:// still works.
+- The browser warns until you trust it once:
+  sudo cp /etc/nginx/ssl/<domain>.crt /usr/local/share/ca-certificates/easydrop-<domain>.crt
+  sudo update-ca-certificates
+  easydrop prints this and never installs it for you - that needs sudo on the
+  client machine and would change what every program there trusts.
+- The certificate is reused until it is within 30 days of expiry, so re-trusting
+  is a rare, one-time event rather than something every deploy causes.
+
 ## Missing proxy headers / app sees http instead of https
 - Nginx sets X-Forwarded-Proto; the app must trust proxy headers.
 
