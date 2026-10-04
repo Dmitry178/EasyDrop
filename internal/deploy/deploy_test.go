@@ -127,7 +127,7 @@ type = "single"
 	}
 	// Single driver teardown is idempotent: nothing deployed -> nil error,
 	// and it must not require the config's app to exist on the host.
-	if err := Teardown(context.Background(), path, ""); err != nil {
+	if _, err := Teardown(context.Background(), path, "", TeardownOptions{}); err != nil {
 		t.Errorf("Teardown() on a clean host must be nil, got: %v", err)
 	}
 }
@@ -224,5 +224,59 @@ func TestCollectLogsEmptyResultIsDistinguishable(t *testing.T) {
 	// missed", not "the container was silent".
 	if res.Scanned != 2 || res.Matched != 0 || len(res.Lines) != 0 {
 		t.Errorf("want 2 scanned / 0 matched, got %+v", res)
+	}
+}
+
+// teardownConfig writes a config with the given nginx block body.
+func teardownConfig(t *testing.T, nginx string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "easydrop.toml")
+	body := "[app]\nname = \"my-api\"\nport = 8080\n[server]\nhost = \"localhost\"\n" +
+		"user = \"root\"\n[driver]\ntype = \"single\"\n" + nginx
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestTeardownWithoutDomainLeavesIngressAlone(t *testing.T) {
+	// No domain means easydrop never wrote a vhost, so there is nothing to
+	// remove and nothing to reload – a localhost deploy without ingress must not
+	// start shelling out to nginx.
+	path := teardownConfig(t, "")
+	res, err := Teardown(context.Background(), path, "", TeardownOptions{})
+	if err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	if res.IngressRemoved {
+		t.Errorf("nothing could have been removed: %+v", res)
+	}
+	if res.IngressNote == "" {
+		t.Error("the result must explain why ingress was skipped")
+	}
+}
+
+func TestTeardownRefusesConfigWithoutPort(t *testing.T) {
+	// Validation happens before any teardown work: a config that cannot deploy
+	// cannot tear down either, and half-running a teardown on a bad config would
+	// be worse than refusing.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "easydrop.toml")
+	if err := os.WriteFile(path, []byte("[app]\nname = \"my-api\"\n[server]\nhost = \"localhost\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Teardown(context.Background(), path, "", TeardownOptions{}); err == nil {
+		t.Error("a config without app.port must be refused")
+	}
+}
+
+func TestAppendNote(t *testing.T) {
+	for _, tc := range []struct{ in, add, want string }{
+		{"", "one", "one"},
+		{"one", "two", "one; two"},
+	} {
+		if got := appendNote(tc.in, tc.add); got != tc.want {
+			t.Errorf("appendNote(%q, %q) = %q, want %q", tc.in, tc.add, got, tc.want)
+		}
 	}
 }
