@@ -1,0 +1,41 @@
+# EasyDrop reverse proxy for {{.Domain}} – managed by easydrop, do not edit.
+# Upstream is rewritten on every deploy (Blue-Green port alternation).
+#
+# Self-signed TLS ({{.CertPath}} / {{.KeyPath}}). Port 80 keeps proxying
+# instead of redirecting: this mode exists for local and internal hosts, where a
+# 301 to a certificate the browser does not trust yet turns a working http://
+# URL into a warning page. The Let's Encrypt path is the opposite – certbot
+# rewrites that block itself once ACME succeeds.
+server {
+    listen 80;
+    server_name {{.Domain}};
+
+    location / {
+        proxy_pass http://127.0.0.1:{{.Port}};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name {{.Domain}};
+
+    ssl_certificate {{.CertPath}};
+    ssl_certificate_key {{.KeyPath}};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    location / {
+        proxy_pass http://127.0.0.1:{{.Port}};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+}
