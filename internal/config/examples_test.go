@@ -18,11 +18,12 @@ const examplesDir = "../../examples"
 // exampleCases pins the expectations that make each example meaningful, so an
 // example cannot silently drift into a copy of another one.
 var exampleCases = map[string]struct {
-	driver   string
-	strategy string
-	domain   string
-	ssl      bool
-	bg       bool
+	driver     string
+	strategy   string
+	domain     string
+	ssl        bool
+	bg         bool
+	selfSigned bool
 }{
 	"01-minimal.toml":                         {driver: "single", strategy: "remote"},
 	"02-localhost-dev.toml":                   {driver: "single", strategy: "remote"},
@@ -41,6 +42,7 @@ var exampleCases = map[string]struct {
 	"15-swarm.toml":                           {driver: "swarm", strategy: "remote"},
 	"16-compose-nginx-ssl.toml":               {driver: "compose", strategy: "remote", domain: "shop.example.com", ssl: true},
 	"20-secrets-from-env.toml":                {driver: "single", strategy: "local", domain: "api.example.com", ssl: true, bg: true},
+	"21-localhost-self-signed-tls.toml":       {driver: "single", strategy: "remote", domain: "localhost", ssl: true, selfSigned: true},
 	"99-full-reference.toml":                  {driver: "single", strategy: "remote", domain: "api.example.com", ssl: true, bg: true},
 }
 
@@ -107,6 +109,9 @@ func TestExampleConfigsParse(t *testing.T) {
 			}
 			if cfg.Driver.BlueGreen != want.bg {
 				t.Errorf("driver.blue_green = %v, want %v", cfg.Driver.BlueGreen, want.bg)
+			}
+			if cfg.Nginx.SelfSigned != want.selfSigned {
+				t.Errorf("nginx.self_signed = %v, want %v", cfg.Nginx.SelfSigned, want.selfSigned)
 			}
 			if cfg.Build.Strategy == "local" && cfg.Build.Registry == "" {
 				t.Error(`build.strategy = "local" without build.registry`)
