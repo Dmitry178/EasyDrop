@@ -73,7 +73,7 @@ func NewServer() *sdk.Server {
 			OpenWorldHint:   boolPtr(true),
 		}), handleRollback)
 	sdk.AddTool(s, tool("teardown_app", "Remove the deployment",
-		"Remove the deployment (containers, backups, compose/swarm stack state); volumes are kept. Destructive: the app stops serving traffic and the Blue-Green rollback backup is destroyed. Idempotent – tearing down an app that is not deployed is not an error. Confirm with the user before calling it.",
+		"Remove the deployment (containers, backups, compose/swarm stack state); named volumes are kept. Also removes the managed nginx vhost when the app has an nginx.domain and reloads nginx – a vhost left behind keeps the domain answering 502 against a port with no container on it, so this is part of the default, not an opt-in. Destructive: the app stops serving traffic and the Blue-Green rollback backup is destroyed. A Let's Encrypt certificate is never deleted (certbot owns it); pass purge=true to also delete a self-signed one, which the next deploy re-issues. Idempotent – tearing down an app that is not deployed is not an error. Confirm with the user before calling it.",
 		mutating(true)), handleTeardown)
 	sdk.AddTool(s, tool("manage_server", "Manage the target host store",
 		"Add or remove a target host record in the local server store. Removing a record forgets the credentials for that host and changes nothing on the target host itself, so a mistake is only recoverable by entering the host again – confirm with the user before removing.",
