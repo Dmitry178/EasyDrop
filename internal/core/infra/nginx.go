@@ -1,12 +1,16 @@
 package infra
 
 import (
+	"bytes"
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"text/template"
+	"time"
 
 	"easydrop/internal/core"
 	"easydrop/internal/core/drivers"
@@ -206,6 +210,13 @@ func (m *NginxManager) RemoveIngress(ctx context.Context, domain string) (Ingres
 // vhost was removed by something else, or the certificate could not be issued.
 // Reporting the configured intent would be a claim easydrop cannot back.
 //
+// Everything reported here – the certificate's kind, its expiry, whether it
+// covers this domain – comes from the certificate file nginx itself points at,
+// so it is identical in both modes (M20). It used to be asymmetric: a
+// self-signed target reported an expiry date while a Let's Encrypt target
+// reported only "TLS", even though `nginx -T` names the certificate path and
+// nothing more was needed to read it.
+//
 // Returns "" when there is no vhost, when TLS is not being served for it, or
 // when nginx cannot be asked – "no answer" rather than "no TLS".
 func (m *NginxManager) TLSStatus(ctx context.Context, domain string) string {
@@ -225,13 +236,74 @@ func (m *NginxManager) TLSStatus(ctx context.Context, domain string) string {
 	if !servesTLS(block) {
 		return ""
 	}
-	if m.selfSigned {
-		if res, err := NewSelfSignedCertifier(m.exec).Describe(ctx, domain); err == nil {
-			return res
-		}
-		return "self-signed"
+	certPath := sslCertificatePath(block)
+	if certPath == "" {
+		return "TLS (certificate path not found in the vhost)"
 	}
-	return "TLS (Let's Encrypt)"
+	cert, err := m.readCert(ctx, certPath)
+	if err != nil {
+		return fmt.Sprintf("TLS (certificate at %s unreadable: %v)", certPath, err)
+	}
+	return describeCert(cert, domain)
+}
+
+// readCert reads and parses the certificate nginx serves. A fullchain file
+// holds several PEM blocks; the first is the leaf, and the leaf is the one whose
+// expiry the client actually notices.
+func (m *NginxManager) readCert(ctx context.Context, path string) (*x509.Certificate, error) {
+	out, _, _, err := m.exec.ExecCommand(ctx, "sudo cat "+q(path))
+	if err != nil {
+		return nil, err
+	}
+	rest := []byte(out)
+	for {
+		var blk *pem.Block
+		blk, rest = pem.Decode(rest)
+		if blk == nil {
+			return nil, fmt.Errorf("no PEM block found")
+		}
+		if blk.Type != "CERTIFICATE" {
+			continue
+		}
+		return x509.ParseCertificate(blk.Bytes)
+	}
+}
+
+// describeCert renders the one line `status` prints. The kind is derived from
+// the certificate itself (issuer == subject means self-signed) rather than from
+// easydrop's config, so it cannot mislabel a domain certbot re-issued or a
+// config switched after the last deploy.
+func describeCert(cert *x509.Certificate, domain string) string {
+	kind := "TLS"
+	if bytes.Equal(cert.RawIssuer, cert.RawSubject) {
+		kind = "self-signed"
+	}
+	status := fmt.Sprintf("%s, expires %s", kind, cert.NotAfter.Format("2006-01-02"))
+	if time.Now().Add(renewBefore).After(cert.NotAfter) {
+		status += " EXPIRING"
+	}
+	// A certificate that does not cover the domain it is served under breaks in
+	// a way that looks like nothing at all: nginx starts happily, the deploy
+	// healthchecks green, and only the client complains. This is the case that
+	// motivated reading the file rather than trusting the config.
+	if !namesDomain(cert, domain) {
+		status += fmt.Sprintf(" – DOES NOT COVER %s", domain)
+	}
+	return status
+}
+
+// sslCertificatePath extracts the first `ssl_certificate <path>;` from a vhost.
+func sslCertificatePath(block string) string {
+	for _, line := range strings.Split(block, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || fields[0] != "ssl_certificate" {
+			continue
+		}
+		if p := strings.TrimSuffix(fields[1], ";"); p != "" {
+			return p
+		}
+	}
+	return ""
 }
 
 // nginxBlockFor extracts the configuration block nginx loaded for domain.
