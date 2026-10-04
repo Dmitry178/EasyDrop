@@ -1,0 +1,48 @@
+# 21 – Local TLS with a self-signed certificate
+# The "https on my machine" config: nginx in front of the app on both :80 and
+# :443, with a certificate easydrop generates, installs and keeps.
+#
+# Use this when the app is only reachable from your own machine (or an internal
+# network) and Let's Encrypt is not an option: it needs a publicly resolvable
+# domain and a reachable port 80, neither of which exists for `localhost`.
+# Before M18, `ssl = true` on a localhost target was a silent no-op.
+#
+# Requires nginx and certbot-free TLS: nothing but nginx itself. The certificate
+# is ECDSA P-256 with SubjectAltName, lives in /etc/nginx/ssl/, and the private
+# key is chmod 0600.
+#
+# The browser will warn until you trust it once:
+#   sudo cp /etc/nginx/ssl/localhost.crt /usr/local/share/ca-certificates/easydrop-localhost.crt
+#   sudo update-ca-certificates
+# easydrop prints this on every run but never installs it for you – that needs
+# sudo on your machine and would silently change what every other program there
+# trusts.
+#
+# Port 80 keeps proxying instead of redirecting to 443: in this mode a redirect
+# would replace a working http:// URL with a certificate warning.
+#
+# Requires passwordless sudo for the nginx install (sites-available, /etc/nginx/ssl).
+# Try: easydrop deploy -c examples/21-localhost-self-signed-tls.toml --skip-bootstrap
+
+[app]
+name = "demo-web"
+port = 3000
+host_port = 8080
+health_check_path = "/healthz"
+
+[server]
+host = "localhost"
+
+[build]
+strategy = "remote"
+
+[driver]
+type = "single"
+blue_green = false
+
+[nginx]
+domain = "localhost"
+ssl = true
+# Generate the certificate locally instead of asking Let's Encrypt.
+self_signed = true
+# nginx.email is ignored in this mode.
