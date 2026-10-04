@@ -68,6 +68,7 @@ Notes on the non-obvious rows:
 
 ### 1.3. `get_status`
 - **Description:** Pulls operational system metrics, active container processes, and reverse proxy properties from the destination environment.
+- **`ssl_status` is now populated (M19).** The field existed in the output schema and was filled by nothing, so the question an agent most wants answered after an HTTPS deploy – "is it actually serving TLS?" – had no answer. It is read from `nginx -T`, the **running** configuration, not from `easydrop.toml`: the two diverge exactly when certbot has rewritten the vhost, when something else removed it, or when a certificate could not be issued, and reporting the configured intent would be a claim easydrop cannot back. Values: `self-signed, expires YYYY-MM-DD` (suffixed `EXPIRING` inside the 30-day renewal window), `TLS (Let's Encrypt)`, or **absent**. An absent value means "could not tell" – no vhost for this domain, TLS not served for it, or nginx unreadable – and must **not** be read as "no TLS". Only reported for an `Up` app; on a downed app it would imply the deployment is healthy.
 - **Arguments:**
   - `app_name` (string, required): Target application name metadata identifier used to extract landscape scopes.
 
@@ -91,10 +92,13 @@ Notes on the non-obvious rows:
   - `config_path` (string, optional): Deployment blueprint for ports/healthcheck/ingress settings. Defaults to `./easydrop.toml`.
 
 ### 1.6. `teardown_app`
-- **Description:** Removes the deployment from the target host (mirrors CLI `teardown`). Backed by `Teardown` on the configured driver: containers (including the Blue-Green backup and leftover `-green`), plus the compose/swarm stack and its state dir. **Named volumes are never deleted.** Idempotent – tearing down an app that is not deployed is not an error.
+- **Description:** Removes the deployment from the target host (mirrors CLI `teardown`). Backed by `deploy.Teardown`: the driver's `Teardown` removes containers (including the Blue-Green backup and leftover `-green`), plus the compose/swarm stack and its state dir; then the **managed nginx vhost is removed and nginx reloaded** when `nginx.domain` is set (M19). **Named volumes are never deleted**, nor is the built image (it may be shared), nor any Let's Encrypt certificate (certbot owns it). Idempotent – tearing down an app that is not deployed is not an error.
+- **Vhost removal is part of the default (M19), not an opt-in.** An agent reasoning about "the app is gone" must know the domain stops answering too. Left behind, nginx keeps proxying to a port with no container on it and the domain returns `502` instead of refusing the connection – the deployment looks half-alive. easydrop wrote both files, so it owns exactly them.
+- **Order and safety:** containers first (a failure there aborts with the host untouched), then the vhost files, then `sudo nginx -t`, and nginx is reloaded only if that test passes – reloading a rejected config would take down every other site on the host. When the test fails the tool reports `ingress_reloaded: false` with a note, because the running nginx still serves the old config and the domain keeps answering `502` until someone reloads. The agent must relay that rather than reporting a clean teardown.
 - **Arguments:**
   - `app_name` (string, required): Targeted application name identifier.
   - `config_path` (string, optional): Deployment blueprint (selects the driver and target host). Defaults to `./easydrop.toml`.
+  - `purge` (boolean, optional): Also delete the self-signed certificate and key for `nginx.domain`. Defaults to `false`. A Let's Encrypt certificate is **never** deleted whatever this is set to – certbot renews it on its own timer and may still be serving the domain through a vhost easydrop never wrote.
 
 ### 1.7. `manage_server`
 - **Description:** Mutates host records in EasyDrop's local server store to safely bind, evaluate, or deprecate environment access configurations.
@@ -119,5 +123,5 @@ The protocol maps contextual state metrics allowing connected LLM instances to a
 | `get_status` | `SingleDriver.Status(ctx, appName)` |
 | `get_logs` | `deploy.Logs(ctx, appName, LogOptions)` → `SingleDriver.Logs(ctx, appName, lines, follow)` + `collectLogs` filter (M16) |
 | `rollback_app` | `SingleDriver.Rollback(ctx, app)` |
-| `teardown_app` | `Teardown(ctx, appName)` on the configured driver |
+| `teardown_app` | `deploy.Teardown(ctx, appName, TeardownOptions{Purge})` → driver `Teardown` + `NginxManager.RemoveIngress` + `SelfSignedCertifier.RemoveCert` (M19) |
 | `manage_server` | encrypted vault (`~/.easydrop/servers.vault`, scrypt + AES-256-GCM) |
