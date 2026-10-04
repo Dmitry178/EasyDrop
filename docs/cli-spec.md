@@ -3,16 +3,19 @@
 Framework: `github.com/spf13/cobra`, no `viper` (single `easydrop.toml`, cobra flags suffice).
 Single binary `cmd/easydrop/main.go` (see ARCHITECTURE.md §5).
 
+> This document specifies the interface only. Design rationale, closed decisions
+> and implementation history live in [`docs/implementation.md`](implementation.md).
+
 ## 1. Base Commands & Syntax
 
 ### 1.0. Global flags
 - `-c, --config string`: path to `easydrop.toml` (defaults to `./easydrop.toml`). Applies to `deploy`, `status`, `logs`, `rollback`, `teardown` (and `mcp-server` ignores it – MCP receives `config_path` per call).
 
-### 1.0.1. Credentials in the config (M13)
+### 1.0.1. Credentials in the config
 - **Secret files:** `easydrop` reads the optional `.env` and `.easydrop.env` located in the **same directory as the config file** (`.easydrop.env` wins if both exist). A missing file is not an error. Both are git-ignored and are excluded from the archive shipped to the target host; a project that needs `.env` in the bundle re-includes it with `!.env` in `.dockerignore`.
 - **Precedence:** real process environment > `.easydrop.env` > `.env` (CI can therefore inject a value with no file at all).
 - **Syntax:** `${VAR}` (required – unset or empty is an error naming the field, before any SSH connection), `${VAR:-default}`, `$$` for a literal dollar sign. Applies to the string fields only: `app.name`, `app.health_check_path`, `server.host`, `server.user`, `server.ssh_key`, `server.password`, `build.registry`, `build.image`, `driver.compose_file`, `nginx.domain`, `nginx.email`. Numbers and booleans are never interpolated.
-- **Never** echo a resolved value in errors, output or logs (NFR-02).
+- **Never** echo a resolved value in errors, output or logs.
 
 ### 1.1. `easydrop init`
 Initializes a new project workspace in the current working directory.
@@ -26,18 +29,19 @@ Initializes a new project workspace in the current working directory.
   - **Tier 3 – conventions**, only when nothing states the port outright:
     - **`package.json` framework table** – `next`/`nuxt`/`@nestjs/core`/`@sveltejs/kit`/`@remix-run/serve`/`react-scripts` 3000, `vite` 5173, `@vue/cli-service` 8080, `@angular/cli` 4200, `astro` 4321, `gatsby` 9000, `serve` 3000, `http-server` 8080, `express` 3000. A `vite preview` in the `start` script resolves to 4173 instead – that is what a production container runs, unlike the 5173 dev server.
     - **Python dependencies** read from `requirements*.txt`, `pyproject.toml`, `Pipfile` and `setup.py` (`install_requires`): WSGI/ASGI servers first, since a container runs a server – `uvicorn`/`gunicorn`/`hypercorn`/`daphne` 8000, `waitress` 8080, `fastapi` 8000, `flask` 5000, `django` 8000, `sanic` 8000, `aiohttp` 8080, `pyramid` 6543, `bottle` 8080, `tornado` 8888, `streamlit` 8501, `gradio` 7860. A `flask`+`gunicorn` project therefore resolves to 8000, not Flask's 5000 dev default.
-  - **Nothing detected → the key is left out.** There is no `8080` fallback: `app.port` is omitted from the generated file, the config is deliberately incomplete, and every easydrop command refuses it with a message naming the field and explaining the two failure modes (healthcheck timeout for `single`, a 502 proxy for compose/swarm). See OD-04.
+  - **Nothing detected → the key is left out.** There is no `8080` fallback: `app.port` is omitted from the generated file, the config is deliberately incomplete, and every easydrop command refuses it with a message naming the field and explaining the two failure modes (healthcheck timeout for `single`, a 502 proxy for compose/swarm).
   - `app.name` is the directory name, unless it is a generic placeholder (`src`, `app`, `project`, `test`, …), in which case the Go module path's last element (major-version suffix stripped) or the npm `name` is used. The detected stack (`go`, `node`, `python`, `rust`, `ruby`, `php`) is reported but configures nothing.
 - **Output:** one shared report (`ScaffoldResult.Report()`), reporting the value **and its source** for every detected field, e.g. `port 9090 (source scan)`. When no port was found it prints `port NOT SET` and an `ACTION REQUIRED` block: what was searched, why nothing is defaulted, **the method to resolve it** (where the server binds: `app.listen(N)`, `ListenAndServe(":N")`, `uvicorn.run(port=N)`, `--port` in a `Procfile`/`Dockerfile CMD`, `PORT` in settings), the obligation to write `app.port` into the file, and both ways to supply it up front. It always notes that `[server].host` is still `localhost`.
 - **Shared with MCP:** the MCP tool `init_project` returns **this exact text**. The two interfaces previously worded it separately and drifted; an agent receiving a weaker variant than the human is precisely the failure mode worth avoiding, so there is one `Report()` and both call it.
 - **Failure mode:** malformed project files (invalid JSON/YAML, `EXPOSE banana`) degrade to the next source – `init` itself does not fail. It fails only if the file cannot be written (e.g. `easydrop.toml` exists without `--force`). The *generated* config may well be unusable on its own – that is intentional when the port is unknown, and the next command says so.
 - **Flags:**
   - `--force`: Overwrite an already existing `easydrop.toml` file. This is destructive: the file is regenerated from scratch, so hand edits are lost.
-  - `--port int`: The port your app listens on **inside** the container. Overrides every detection source and is reported as `explicit override`; `0` or omitted means "detect". Must be 1-65535, otherwise `init` fails. This is the supported escape hatch when detection cannot tell (OD-04) – including for an agent that has determined the port itself.
+  - `--port int`: The port your app listens on **inside** the container. Overrides every detection source and is reported as `explicit override`; `0` or omitted means "detect". Must be 1-65535, otherwise `init` fails. This is the supported escape hatch when detection cannot tell – including for an agent that has determined the port itself.
 
 ### 1.2. `easydrop deploy`
 Triggers the comprehensive application build and deployment pipeline onto the target environment.
 - **Behavior:** Parses the active `easydrop.toml`, inspects host server configurations and runtime engines, produces the image, updates ingress networking routes, and mounts the active containers. Image production follows `build.strategy`: `remote` (default) ships the workspace and builds on the host; `local` builds here, pushes to `build.registry` and pulls on the host – that strategy requires `build.registry` and the `single` driver.
+- **Health probing:** after the container starts, `app.health_check_path` is polled up to 10 times, 2 seconds apart, and the deploy fails unless it answers `200`. The scheme follows `app.health_check_scheme`: unset (or `auto`) tries HTTP and falls back to HTTPS within the same attempt, so an app that answers only over TLS – or that redirects everything to HTTPS, as most nginx front-ends do – deploys normally. `http` or `https` pins the scheme, and a pinned `https` that fails does *not* fall back. The HTTPS probe uses `curl -k`: it connects to `localhost`, so a certificate issued for the domain would fail verification even when valid, and what this probe tests is whether the app answers, not whether it holds a trusted certificate. Redirects are **not** followed – a redirect counts as a miss, because `-L` would let an app pass by bouncing the probe at some unrelated 200 page.
 - **Flags:**
   - `-c, --config string`: Explicit path targeting the custom configuration blueprint file (defaults to `./easydrop.toml`).
   - `--no-cache`: Bypass the Docker build cache for this run (overrides `build.no_cache` from `easydrop.toml` to `true`). Applies to both strategies: the on-host build (`build.strategy = "remote"`) and the local build + push (`"local"`).
@@ -47,15 +51,17 @@ Triggers the comprehensive application build and deployment pipeline onto the ta
 ### 1.3. `easydrop status`
 Queries and displays the active system metrics and health landscapes of the deployed application stack.
 - **Behavior:** Establishes a transient connection to the host machine to extract current runtime flags, operational container lifecycle stages, resource allocations, active uptimes, and TLS/SSL expiration matrices. App name is taken from `app.name` in the resolved `easydrop.toml`.
-- **TLS line (M19):** for an `Up` app with `nginx.ssl` and a domain, one extra line reports the certificate **as nginx is actually serving it** – `self-signed, expires 2027-01-01` (flagged `EXPIRING` inside the 30-day renewal window), `TLS (Let's Encrypt)`, or nothing. It is read from `nginx -T`, the running configuration, rather than from `easydrop.toml`: config says what was requested, `nginx -T` says what is loaded, and they diverge exactly when certbot has rewritten the vhost, when something else removed it, or when a certificate could not be issued. No line means "could not tell" (no vhost, no TLS, or nginx unreadable) – never "no TLS". Not reported for a downed app, where it would imply the deployment is healthy.
+- **TLS line:** for an `Up` app with `nginx.ssl` and a domain, one extra line reports the certificate **as nginx is actually serving it** – `self-signed, expires 2027-01-01` or `TLS, expires 2026-11-02`, flagged `EXPIRING` inside the 30-day renewal window, or `… – DOES NOT COVER <domain>` when the certificate does not name the host it is served under. Nothing is printed when there is nothing to report.
+- **Every fact comes from the served file.** The vhost names the certificate, easydrop reads and parses that file, so the answer holds identically for a self-signed and a Let's Encrypt certificate. The kind is read from the certificate itself (issuer == subject ⇒ self-signed) rather than from `nginx.self_signed`, so a domain re-issued by certbot or a config switched since the last deploy cannot be mislabelled. Config says what was requested; this line says what is loaded, and the two diverge exactly when certbot has rewritten the vhost, when something else removed it, or when a certificate could not be issued.
+- No line means "could not tell" (no vhost for this domain, TLS not served for it, or nginx unreadable) – never "no TLS". Not reported for a downed app, where it would imply the deployment is healthy.
 
 ### 1.4. `easydrop logs [app_name]`
 Streams operational container output channels directly into the terminal interface.
-- **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `deploy.Logs(ctx, appName, LogOptions)` over the driver's `Logs(ctx, appName, lines, follow)` – `lines` = `--tail`, `follow` = `--follow`, and the core does the filtering (M16), so the CLI and `get_logs` cannot drift.
+- **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `deploy.Logs(ctx, appName, LogOptions)` over the driver's `Logs(ctx, appName, lines, follow)` – `lines` = `--tail`, `follow` = `--follow`, and the core does the filtering, so the CLI and `get_logs` cannot drift.
 - **Flags:**
   - `-f, --follow`: Stream live stdout/stderr data logs from the remote host environment in real time (equivalent to `tail -f`).
   - `-n, --tail int`: Number of historical trace log lines to **scan** upon initial attachment (defaults to 100).
-  - `-g, --grep string`: Case-insensitive regular expression; print only matching lines (e.g. `-g 'error|panic|fatal'`) (M16). An invalid expression fails the command – it never degrades into an unfiltered dump. When nothing matches, the reason is printed to stderr (`no lines matched (scanned N lines …)` vs `no log lines available`), because an empty result is otherwise ambiguous.
+  - `-g, --grep string`: Case-insensitive regular expression; print only matching lines (e.g. `-g 'error|panic|fatal'`). An invalid expression fails the command – it never degrades into an unfiltered dump. When nothing matches, the reason is printed to stderr (`no lines matched (scanned N lines …)` vs `no log lines available`), because an empty result is otherwise ambiguous.
 
 ### 1.5. `easydrop rollback [app_name]`
 Restores the stopped backup kept by the last Blue-Green deploy.
@@ -64,7 +70,7 @@ Restores the stopped backup kept by the last Blue-Green deploy.
 ### 1.6. `easydrop teardown [app_name]`
 Removes the deployment from the target host.
 - **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `Teardown` on the configured driver: removes containers (including the stopped Blue-Green backup `[app]-active-previous` and any leftover `-green`), and for Compose/Swarm also the stack (`compose down` / `docker stack rm`) plus its state directory. **Named volumes are never deleted** – data outlives the deploy. Idempotent: tearing down an app that is not deployed succeeds with a "not present, skipping" note.
-- **The nginx vhost is removed too (M19), by default.** When `nginx.domain` is set, `/etc/nginx/sites-available/<domain>` and its `sites-enabled` symlink are deleted and nginx reloaded. Leaving them behind is not a neutral state: nginx keeps proxying to a port with no container on it, so the domain answers `502` rather than refusing the connection, and nothing in the output explains why. easydrop wrote both files, so it owns exactly them.
+- **The nginx vhost is removed too, by default.** When `nginx.domain` is set, `/etc/nginx/sites-available/<domain>` and its `sites-enabled` symlink are deleted and nginx reloaded. Leaving them behind is not a neutral state: nginx keeps proxying to a port with no container on it, so the domain answers `502` rather than refusing the connection, and nothing in the output explains why. easydrop wrote both files, so it owns exactly them.
 - **Order:** containers first, ingress second. A failure to remove the containers aborts the whole operation with the host untouched – better than a vhost pointing at nothing.
 - **Guarded reload:** the files are deleted, then `sudo nginx -t`, and nginx is reloaded only if the test passes. Reloading a rejected config would take down every other site on the host. If the test fails, the command reports that the vhost files are gone but nginx still serves the old configuration, so the domain keeps answering `502` until it is reloaded.
 - **Never deleted:** named volumes, the built image (it may be shared with another app), and any Let's Encrypt certificate (certbot owns it and renews it on its own timer). A self-signed certificate is kept unless `--purge`.
