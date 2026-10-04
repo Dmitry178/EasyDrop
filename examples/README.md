@@ -99,6 +99,7 @@ module path or the npm name is used instead. Full rules in
 | [`15-swarm.toml`](15-swarm.toml) | Swarm stack | `driver.type = "swarm"` |
 | [`16-compose-nginx-ssl.toml`](16-compose-nginx-ssl.toml) | Compose + domain + TLS | the realistic multi-service production setup |
 | [`20-secrets-from-env.toml`](20-secrets-from-env.toml) | Secrets without git | `${VAR}`, `.easydrop.env`, defaults |
+| [`21-localhost-self-signed-tls.toml`](21-localhost-self-signed-tls.toml) | Local TLS | `self_signed`, HTTPS on `localhost`, no ACME |
 | [`99-full-reference.toml`](99-full-reference.toml) | Schema reference | all keys, all defaults |
 
 Examples that touch SSH credentials – `03`, `04`, `20`, `99` – all frame the
@@ -232,7 +233,20 @@ Ingress is controlled entirely by `nginx.domain`:
 * **set, `ssl = true`** – the same, plus a Let's Encrypt certificate for the
   domain ([`06`](06-remote-nginx-ssl.toml), [`16`](16-compose-nginx-ssl.toml)).
   Set `nginx.email` as the ACME contact: without it nobody warns you before the
-  certificate expires.
+  certificate expires. Requires a publicly resolvable domain and a reachable
+  port 80.
+* **set, `ssl = true` + `self_signed = true`** – the certificate is generated
+  locally instead of by an ACME authority
+  ([`21`](21-localhost-self-signed-tls.toml)). This is the mode for `localhost`
+  and internal DNS, where Let's Encrypt cannot be reached at all; before it
+  existed, `ssl = true` on a local target silently did nothing. Two differences
+  from the ACME path worth knowing: the vhost now serves `:443` itself (certbot
+  owns that block in the other mode), and `:80` keeps proxying rather than
+  redirecting, so `http://localhost` keeps working.
+  The browser warns until you trust the certificate once – easydrop prints the
+  command and never installs it for you. The certificate is reused across
+  deploys and only rotates inside 30 days of expiry, so the trust decision you
+  made holds; on rotation you will be asked once more.
 
 `app.health_check_path`
 ([`09`](09-healthcheck-path.toml)) is probed at
@@ -350,8 +364,9 @@ write a literal password in the config.
 | `driver.compose_file` | string | `docker-compose.yml` | compose and swarm |
 | `driver.blue_green` | bool | `false` | `single` only; `--blue-green` forces true |
 | `nginx.domain` | string | `""` | empty = no ingress |
-| `nginx.ssl` | bool | `false` | requires a non-empty domain |
-| `nginx.email` | string | `""` | ACME contact |
+| `nginx.ssl` | bool | `false` | serve TLS on the vhost; requires a non-empty `domain` |
+| `nginx.self_signed` | bool | `false` | generate a local self-signed certificate instead of Let's Encrypt; requires `ssl` |
+| `nginx.email` | string | `""` | ACME contact; ignored when `self_signed` is set |
 
 Unknown keys are **silently ignored** by the TOML parser, so a typo surfaces as
 a confusing "missing" error later. The MCP resource `easydrop://docs/schema`
