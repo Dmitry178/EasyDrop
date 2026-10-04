@@ -90,7 +90,7 @@ module path or the npm name is used instead. Full rules in
 | [`06-remote-nginx-ssl.toml`](06-remote-nginx-ssl.toml) | **Flagship**: VPS + domain + TLS | bootstrap → build → Nginx → Let's Encrypt |
 | [`07-blue-green.toml`](07-blue-green.toml) | Zero-downtime deploys | `blue_green`, backup container, `rollback` target |
 | [`08-build-no-cache.toml`](08-build-no-cache.toml) | Bust a stale layer cache | `build.no_cache` |
-| [`09-healthcheck-path.toml`](09-healthcheck-path.toml) | Readiness endpoint | `health_check_path = "/healthz"` |
+| [`09-healthcheck-path.toml`](09-healthcheck-path.toml) | Readiness endpoint | `health_check_path`, `health_check_scheme` |
 | [`10-nginx-plain-http.toml`](10-nginx-plain-http.toml) | Domain, no TLS | reverse proxy only, `ssl = false` |
 | [`11-build-local-registry.toml`](11-build-local-registry.toml) | Build here, push there | `build.strategy = "local"`, `registry` |
 | [`12-build-local-registry-pinned-tag.toml`](12-build-local-registry-pinned-tag.toml) | CI-friendly tagging | `build.image = "web:2.1"` |
@@ -250,9 +250,19 @@ Ingress is controlled entirely by `nginx.domain`:
 
 `app.health_check_path`
 ([`09`](09-healthcheck-path.toml)) is probed at
-`http://127.0.0.1:<host_port><path>` after the container starts – 10 attempts,
-2 seconds apart, then the deploy fails. Point it at a cheap, dependency-light
-endpoint: one that needs the database turns a slow start into a failed deploy.
+`[http|https]://127.0.0.1:<host_port><path>` after the container starts – 10
+attempts, 2 seconds apart, then the deploy fails. Point it at a cheap,
+dependency-light endpoint: one that needs the database turns a slow start into a
+failed deploy.
+
+`app.health_check_scheme` controls that probe's scheme and defaults to `auto`:
+HTTP is tried, and on a miss HTTPS is tried within the same attempt. An app that
+answers *only* over TLS, or that redirects everything to HTTPS the way most nginx
+front-ends do, therefore deploys normally instead of failing every attempt with a
+healthcheck timeout. Set `"https"` to skip the wasted first attempt, or `"http"`
+to state that TLS must not be used. A redirect counts as a **miss**, not a pass –
+the probe never follows redirects, because `-L` would let an app pass by bouncing
+the probe at some unrelated 200 page.
 
 ### Taking it back down
 
@@ -373,6 +383,7 @@ write a literal password in the config.
 | `app.port` | int | – | **required**; 1–65535; in-container for `single`, host-published for compose/swarm |
 | `app.host_port` | int | `app.port` | 1–65534; Blue-Green needs `{host_port, host_port+1}` |
 | `app.health_check_path` | string | `/` | must answer `200`; `single` only |
+| `app.health_check_scheme` | string | `""` | `http`, `https`, or `auto` (empty = auto: try HTTP, fall back to HTTPS) |
 | `server.host` | string | – | **required**; `localhost`/`127.0.0.1` = local executor |
 | `server.user` | string | – | required for remote hosts, ignored for localhost |
 | `server.ssh_key` | string | `~/.ssh/id_rsa` | only the `~/` form is expanded |
