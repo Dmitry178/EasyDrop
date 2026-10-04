@@ -118,6 +118,20 @@ func applyNonPortDefaults(cfg *models.Config) error {
 	if strings.TrimSpace(cfg.App.HealthCheckPath) == "" {
 		cfg.App.HealthCheckPath = "/"
 	}
+	// "auto" is accepted as an explicit spelling of the default and normalized
+	// to "", so one internal representation carries the meaning. Anything else
+	// is rejected rather than defaulted: silently probing HTTP for an app the
+	// user declared as HTTPS is exactly the 10-attempt timeout the setting exists
+	// to prevent.
+	switch strings.ToLower(strings.TrimSpace(cfg.App.HealthCheckScheme)) {
+	case "", "auto":
+		cfg.App.HealthCheckScheme = ""
+	case "http", "https":
+		cfg.App.HealthCheckScheme = strings.ToLower(strings.TrimSpace(cfg.App.HealthCheckScheme))
+	default:
+		return fmt.Errorf("validation error: app.health_check_scheme must be \"http\", "+
+			"\"https\" or \"auto\" (try HTTP, fall back to HTTPS), got %q", cfg.App.HealthCheckScheme)
+	}
 	if err := validateNginx(&cfg.Nginx); err != nil {
 		return err
 	}
