@@ -45,6 +45,27 @@ const troubleshootingDoc = `# EasyDrop troubleshooting runbook
 - The certificate is reused until it is within 30 days of expiry, so re-trusting
   is a rare, one-time event rather than something every deploy causes.
 
+## After teardown the domain still answers 502
+- Fixed in this build: teardown now removes the managed vhost (and reloads
+  nginx) when nginx.domain is set. If you ran an older easydrop, the leftover
+  files are /etc/nginx/sites-available/<domain> and its symlink in
+  sites-enabled/ - remove both and reload nginx by hand.
+
+## After teardown the domain still answers 200 / nginx was not reloaded
+- teardown deletes the vhost files but reloads nginx only if the config test
+  (nginx -t) passes.
+  Reloading a config nginx rejected would take down every other site on the
+  host. The running nginx keeps serving the config it had already loaded, so the
+  domain answers 502 until someone reloads. Fix the broken site config, then:
+  sudo nginx -t && sudo systemctl reload nginx
+  teardown reports this as ingress_reloaded=false - relay it instead of claiming
+  a clean teardown.
+
+## status shows no TLS line
+- Absent ssl_status means "could not tell": no vhost for this domain, TLS not
+  served for it, or nginx unreadable. It is NOT "no TLS". Inspect the running
+  config yourself: sudo nginx -T | grep -A5 server_name <domain>
+
 ## Missing proxy headers / app sees http instead of https
 - Nginx sets X-Forwarded-Proto; the app must trust proxy headers.
 
