@@ -47,6 +47,7 @@ Triggers the comprehensive application build and deployment pipeline onto the ta
 ### 1.3. `easydrop status`
 Queries and displays the active system metrics and health landscapes of the deployed application stack.
 - **Behavior:** Establishes a transient connection to the host machine to extract current runtime flags, operational container lifecycle stages, resource allocations, active uptimes, and TLS/SSL expiration matrices. App name is taken from `app.name` in the resolved `easydrop.toml`.
+- **TLS line (M19):** for an `Up` app with `nginx.ssl` and a domain, one extra line reports the certificate **as nginx is actually serving it** – `self-signed, expires 2027-01-01` (flagged `EXPIRING` inside the 30-day renewal window), `TLS (Let's Encrypt)`, or nothing. It is read from `nginx -T`, the running configuration, rather than from `easydrop.toml`: config says what was requested, `nginx -T` says what is loaded, and they diverge exactly when certbot has rewritten the vhost, when something else removed it, or when a certificate could not be issued. No line means "could not tell" (no vhost, no TLS, or nginx unreadable) – never "no TLS". Not reported for a downed app, where it would imply the deployment is healthy.
 
 ### 1.4. `easydrop logs [app_name]`
 Streams operational container output channels directly into the terminal interface.
@@ -63,7 +64,13 @@ Restores the stopped backup kept by the last Blue-Green deploy.
 ### 1.6. `easydrop teardown [app_name]`
 Removes the deployment from the target host.
 - **Behavior:** If `[app_name]` is omitted, `app.name` from the resolved `easydrop.toml` is used. Backed by `Teardown` on the configured driver: removes containers (including the stopped Blue-Green backup `[app]-active-previous` and any leftover `-green`), and for Compose/Swarm also the stack (`compose down` / `docker stack rm`) plus its state directory. **Named volumes are never deleted** – data outlives the deploy. Idempotent: tearing down an app that is not deployed succeeds with a "not present, skipping" note.
-- **Flags:** `-c, --config string` (defaults to `./easydrop.toml`).
+- **The nginx vhost is removed too (M19), by default.** When `nginx.domain` is set, `/etc/nginx/sites-available/<domain>` and its `sites-enabled` symlink are deleted and nginx reloaded. Leaving them behind is not a neutral state: nginx keeps proxying to a port with no container on it, so the domain answers `502` rather than refusing the connection, and nothing in the output explains why. easydrop wrote both files, so it owns exactly them.
+- **Order:** containers first, ingress second. A failure to remove the containers aborts the whole operation with the host untouched – better than a vhost pointing at nothing.
+- **Guarded reload:** the files are deleted, then `sudo nginx -t`, and nginx is reloaded only if the test passes. Reloading a rejected config would take down every other site on the host. If the test fails, the command reports that the vhost files are gone but nginx still serves the old configuration, so the domain keeps answering `502` until it is reloaded.
+- **Never deleted:** named volumes, the built image (it may be shared with another app), and any Let's Encrypt certificate (certbot owns it and renews it on its own timer). A self-signed certificate is kept unless `--purge`.
+- **Flags:**
+  - `-c, --config string` (defaults to `./easydrop.toml`).
+  - `--purge`: also delete the self-signed certificate and key for `nginx.domain`. Off by default – it is re-created in milliseconds by the next deploy, but re-trusting it in a browser costs a click, and the same domain may be served by a vhost easydrop never wrote. Ignored with an explanatory note when the target is a Let's Encrypt certificate.
 
 ### 1.7. `easydrop mcp-server`
 Starts the MCP server in stdio JSON-RPC mode (same binary, see `docs/mcp-spec.md`).
