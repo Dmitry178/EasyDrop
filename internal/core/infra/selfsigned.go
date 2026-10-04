@@ -126,6 +126,68 @@ func (c *SelfSignedCertifier) EnsureCert(ctx context.Context, domain string) (Ce
 	return CertResult{CertPath: certPath, KeyPath: keyPath, Created: true, NotAfter: notAfter}, nil
 }
 
+// Describe reports the human-readable state of the certificate on disk for
+// domain, without changing anything. Used by TLSStatus so `easydrop status`
+// can answer "am I actually behind TLS, and until when" from the file nginx is
+// really serving rather than from the configured intent.
+//
+// A missing or unreadable certificate is reported, not swallowed: "certificate
+// missing" is precisely the thing a user needs to hear, and returning "" would
+// be indistinguishable from "TLS not configured".
+func (c *SelfSignedCertifier) Describe(ctx context.Context, domain string) (string, error) {
+	if err := models.ValidateCertifiableDomain(domain); err != nil {
+		return "", err
+	}
+	certPath, _, _ := certPaths(domain)
+	existing, err := c.readCert(ctx, certPath)
+	if err != nil {
+		return "self-signed, certificate unreadable", nil
+	}
+	if existing == nil {
+		return "self-signed, certificate missing", nil
+	}
+	state := "self-signed"
+	if time.Now().Add(renewBefore).After(existing.NotAfter) {
+		state += ", EXPIRING"
+	}
+	return fmt.Sprintf("%s, expires %s", state, existing.NotAfter.Format("2006-01-02")), nil
+}
+
+// RemoveCert deletes the self-signed certificate and key for domain.
+//
+// It exists only for this mode, and only for an explicit purge (M19). Two rules
+// are load-bearing:
+//   - It never touches a Let's Encrypt certificate. That one belongs to certbot,
+//     has its own renewal timer, and may still be serving a domain through a
+//     hand-written vhost; deleting it would break a site easydrop does not own.
+//   - It removes exactly the two easydrop-created paths and nothing else in
+//     /etc/nginx/ssl, so a directory shared with certificates from other tools is
+//     left intact.
+//
+// Returns whether anything was actually deleted, so the caller can say "nothing
+// to purge" instead of implying a removal that did not happen.
+func (c *SelfSignedCertifier) RemoveCert(ctx context.Context, domain string) (bool, error) {
+	if err := models.ValidateCertifiableDomain(domain); err != nil {
+		return false, err
+	}
+	certPath, keyPath, _ := certPaths(domain)
+
+	// Both files before reporting success: a half-removed pair leaves nginx
+	// unable to start on the next reload, which is worse than leaving both.
+	removed := false
+	for _, path := range []string{certPath, keyPath} {
+		if _, _, _, err := c.exec.ExecCommand(ctx, "sudo test -f "+q(path)); err != nil {
+			continue
+		}
+		if _, _, _, err := c.exec.ExecCommand(ctx, "sudo rm -f "+q(path)); err != nil {
+			return removed, fmt.Errorf("remove %s: %w", path, err)
+		}
+		c.logf("removed %s", path)
+		removed = true
+	}
+	return removed, nil
+}
+
 // readCert returns the existing certificate, or nil when there is none. A
 // missing file is the normal first-deploy case, not an error; anything else
 // (unreadable, malformed) degrades to "regenerate", because refusing to deploy
