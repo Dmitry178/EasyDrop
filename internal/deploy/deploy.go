@@ -201,7 +201,8 @@ func buildLocalAndPull(ctx context.Context, cfg *models.Config, app *models.Appl
 	return nil
 }
 
-// Status queries the deployment state via the configured driver.
+// Status queries the deployment state via the configured driver and enriches it
+// with the TLS state nginx is actually serving.
 func Status(ctx context.Context, configPath, appName string) (*models.AppStatus, error) {
 	cfg, ex, name, err := setupDriver(configPath, appName)
 	if err != nil {
@@ -212,7 +213,31 @@ func Status(ctx context.Context, configPath, appName string) (*models.AppStatus,
 	if err != nil {
 		return nil, err
 	}
-	return drv.Status(ctx, name)
+	st, err := drv.Status(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	// Only for a running app: TLS on a downed container is a historical fact,
+	// and reporting it would suggest the deployment is healthy.
+	if st.Status == "Up" {
+		st.SSLStatus = tlsStatus(ctx, cfg, ex)
+	}
+	return st, nil
+}
+
+// tlsStatus asks the ingress layer what nginx is serving for the configured
+// domain. Best effort by construction: a host without nginx, or without
+// permission to read its config, yields "" rather than an error, because status
+// must not fail over a cosmetic detail.
+func tlsStatus(ctx context.Context, cfg *models.Config, ex core.CommandExecutor) string {
+	if cfg == nil || !cfg.Nginx.SSL || strings.TrimSpace(cfg.Nginx.Domain) == "" {
+		return ""
+	}
+	mgr := infra.NewNginxManager(ex)
+	if cfg.Nginx.SelfSigned {
+		mgr = infra.NewNginxManagerTLS(ex)
+	}
+	return mgr.TLSStatus(ctx, cfg.Nginx.Domain)
 }
 
 // LogOptions carries the `logs` inputs both interfaces share.
@@ -335,20 +360,111 @@ func setupDriver(configPath, appName string) (*models.Config, core.CommandExecut
 	return cfg, ex, name, nil
 }
 
+// TeardownOptions carries the `teardown` inputs both interfaces share.
+type TeardownOptions struct {
+	// Purge additionally deletes the self-signed certificate and key for
+	// nginx.domain (M19). Off by default: the certificate is easydrop's to
+	// create, but re-trusting it in a browser costs the user a click, and the
+	// same domain may still be served by a hand-written vhost. A Let's Encrypt
+	// certificate is never touched whatever this is set to – certbot owns it.
+	Purge bool
+}
+
+// TeardownResult reports what was removed, so each interface can say what
+// actually happened instead of a single "done".
+type TeardownResult struct {
+	// AppName is the resolved application name.
+	AppName string
+	// IngressRemoved is false when the app had no nginx domain, or had no vhost
+	// to remove.
+	IngressRemoved bool
+	// IngressReloaded is false when nginx could not be reloaded. The vhost files
+	// are gone but the running nginx still serves the config it had loaded, so
+	// the domain keeps answering 502 until someone reloads – worth saying out
+	// loud rather than reporting a clean teardown.
+	IngressReloaded bool
+	// IngressNote explains an IngressRemoved/IngressReloaded combination that is
+	// not the plain success case.
+	IngressNote string
+	// CertPurged is true when a self-signed certificate was actually deleted.
+	CertPurged bool
+}
+
 // Teardown removes the deployment: containers, the Blue-Green backup, the
-// compose/swarm state dir and (compose) the stack. Volumes are never deleted –
-// data outlives the deploy. Idempotent: nothing deployed is not an error.
-func Teardown(ctx context.Context, configPath, appName string) error {
+// compose/swarm state dir and (compose) the stack, plus the nginx vhost when
+// the app has a domain. Volumes are never deleted – data outlives the deploy.
+// Idempotent: nothing deployed is not an error.
+//
+// The vhost removal is part of the default, not an opt-in. Leaving it behind is
+// not a neutral state: nginx keeps proxying to a port with no container on it,
+// so the domain answers 502 instead of refusing the connection, and nothing in
+// the output says why. easydrop overwrote those two files on every deploy, so
+// it owns them and only them.
+//
+// Order is load-bearing: containers first, then ingress. If the container removal
+// fails we never reach the ingress step, and the host is left exactly as it was
+// – better than a vhost pointing at nothing.
+func Teardown(ctx context.Context, configPath, appName string, opts TeardownOptions) (*TeardownResult, error) {
 	cfg, ex, name, err := setupDriver(configPath, appName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer ex.Close()
 	drv, err := NewDriver(cfg, ex, "")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return drv.Teardown(ctx, name)
+	if err := drv.Teardown(ctx, name); err != nil {
+		return nil, err
+	}
+
+	res := &TeardownResult{AppName: name}
+	domain := strings.TrimSpace(cfg.Nginx.Domain)
+	if domain == "" {
+		res.IngressNote = "no nginx domain configured – ingress untouched"
+		return res, nil
+	}
+
+	mgr := infra.NewNginxManager(ex)
+	if cfg.Nginx.SelfSigned {
+		mgr = infra.NewNginxManagerTLS(ex)
+	}
+	removal, err := mgr.RemoveIngress(ctx, domain)
+	if err != nil {
+		return res, fmt.Errorf("remove nginx vhost for %s: %w", domain, err)
+	}
+	res.IngressRemoved, res.IngressReloaded = removal.Removed, removal.Reloaded
+	res.IngressNote = removal.ReloadReason
+	if removal.Removed && !removal.Reloaded {
+		res.IngressNote = "vhost files deleted, but nginx was not reloaded (" +
+			removal.ReloadReason + ") – it keeps serving the old config, so " + domain +
+			" will answer 502 until it is reloaded"
+	}
+
+	// Purge last: only meaningful once nothing references the certificate.
+	if opts.Purge {
+		if !cfg.Nginx.SelfSigned {
+			res.IngressNote = appendNote(res.IngressNote,
+				"nothing to purge: a Let's Encrypt certificate belongs to certbot and is left alone")
+		} else {
+			purged, err := infra.NewSelfSignedCertifier(ex).RemoveCert(ctx, domain)
+			if err != nil {
+				return res, err
+			}
+			res.CertPurged = purged
+			if !purged {
+				res.IngressNote = appendNote(res.IngressNote, "no self-signed certificate to purge")
+			}
+		}
+	}
+	return res, nil
+}
+
+func appendNote(existing, add string) string {
+	if existing == "" {
+		return add
+	}
+	return existing + "; " + add
 }
 
 // InitOptions carries the `init` inputs both interfaces share.
