@@ -3,6 +3,8 @@
 This document outlines the chronological execution order, core data contracts, and specific acceptance criteria for each system module. Steps must be developed sequentially. Every micro-task includes a dedicated checkbox to explicitly track progress.
 
 > **Developer workflow:** the repo ships a `Makefile` – `make` lists all targets, `make build` compiles the binary (version stamped from `git describe`), `make verify` is the CI gate (gofmt + `go vet` + tests), `make test-race` runs the race detector, `make cover` writes `bin/coverage.out`, `make release` cross-compiles all six platform binaries with `SHA256SUMS` (NFR-03), and `make smoke` deploys a throwaway app to the local docker daemon end-to-end. See README § Development.
+>
+> **Continuous integration:** `.github/workflows/ci.yml` runs `verify` (incl. `make check-platforms`), a real `smoke`, one `build` job per platform triple, native test runs on Linux/macOS/Windows, and – on a `v*` tag – a `release` job attaching every binary plus `SHA256SUMS`. `PLATFORMS` in the `Makefile` is the single source of truth; the workflow repeats it and `check-platforms` fails the build on drift, so a release cannot quietly stop building for one platform.
 
 ---
 
@@ -39,6 +41,11 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 > `CommandExecutor` always has `Close() error`;
 > Nginx upload = stage to `/tmp/easydrop/` + `sudo mv`;
 > Certbot without email = `--register-unsafely-without-email`.
+>
+> Cross-compilation: `CGO_ENABLED=0` everywhere, so one Linux runner produces every
+> target with no cross toolchain; the CI matrix mirrors `PLATFORMS` and is kept in
+> sync by `make check-platforms` (one build path: `build-platform` is what both the
+> matrix and `release` call).
 >
 > Toolchain: Go ≥ 1.27 (pinned via `go 1.27` in `go.mod`. System install:
 > `~/go/go1.27.1`, first on `PATH` via `~/.bashrc`; `GOTOOLCHAIN=auto` as fallback).
