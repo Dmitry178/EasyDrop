@@ -23,9 +23,20 @@ port = 8080
 # The Blue-Green pair is {host_port, host_port + 1}, so 65535 is rejected.
 host_port = 8080
 
-# Optional. HTTP path probed for 200 after the container starts.
+# Optional. Path probed for 200 after the container starts.
 # Default "/". 10 attempts, ~2s apart.
 health_check_path = "/healthz"
+
+# Optional. Scheme of that probe: "http", "https", or "auto"/empty.
+# Default auto: try HTTP, and on a miss try HTTPS within the same attempt, so an
+# app that answers only over TLS - or that redirects everything to HTTPS - still
+# deploys. Pin "https" to skip the wasted first attempt; a pinned "https" never
+# falls back. The HTTPS probe uses curl -k (it connects to localhost, so a
+# certificate issued for the domain would not verify - and this probe tests
+# whether the app answers, not whether it holds a trusted certificate).
+# Redirects are NOT followed: a 301 counts as a miss, because -L would let the
+# app pass by bouncing the probe at some unrelated 200 page.
+health_check_scheme = "auto"
 
 [server]
 # REQUIRED. "localhost" or "127.0.0.1" runs everything locally (no SSH);
