@@ -30,7 +30,10 @@ GO          ?= go
 GOFILES     := $(shell find . -name '*.go' -not -path './$(BIN_DIR)/*')
 
 # Cross-compilation matrix for NFR-03 (single binary per platform).
+# Single source of truth: the CI workflow lists the same triples and `make
+# check-platforms` fails the build if the two ever disagree.
 PLATFORMS   := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
+WORKFLOW    := .github/workflows/ci.yml
 
 # --- help --------------------------------------------------------------------
 
@@ -129,16 +132,50 @@ ci: verify ## Alias for `make verify`
 
 # --- release -----------------------------------------------------------------
 
+.PHONY: platforms
+platforms: ## List the release platforms, one per line
+	@for p in $(PLATFORMS); do echo $$p; done
+
+# build-platform compiles exactly one triple. CI calls it once per matrix entry
+# so a broken platform fails that entry alone, and `release` calls it for all of
+# them – one build path, so the two cannot drift in flags or output naming.
+# CGO is off throughout: the binary only talks to Docker over a socket, so a
+# static build is both correct and the reason one Linux runner can produce every
+# target without a cross toolchain.
+.PHONY: build-platform
+build-platform:
+	@test -n "$(PLATFORM)" || { echo "PLATFORM is required, e.g. PLATFORM=darwin/arm64 (see: make platforms)"; exit 1; }
+	@mkdir -p $(DIST_DIR)
+	@os=$${PLATFORM%/*}; arch=$${PLATFORM#*/}; \
+	case "$$os/$$arch" in */*) ;; *) echo "bad PLATFORM '$(PLATFORM)', want <os>/<arch>"; exit 1 ;; esac; \
+	ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
+	out="$(DIST_DIR)/$(BINARY)_$${os}_$${arch}$$ext"; \
+	echo "building $$out"; \
+	GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 \
+		$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o "$$out" $(CMD)
+
+# check-platforms keeps the CI matrix and PLATFORMS in step. Two lists of
+# platforms is two chances to ship a release that quietly stops building for
+# one of them, so CI treats the disagreement as an error rather than a nit.
+.PHONY: check-platforms
+check-platforms:
+	@if [ ! -f "$(WORKFLOW)" ]; then echo "$(WORKFLOW) not present, nothing to compare"; exit 0; fi
+	@want=$$(for p in $(PLATFORMS); do echo $$p | tr / -; done | sort | tr '\n' ' '); \
+	got=$$(grep -oE 'platform: (linux|darwin|windows)/[a-z0-9]+' "$(WORKFLOW)" \
+		| sed 's/platform: //' | tr / - | sort -u | tr '\n' ' '); \
+	if [ "$$want" != "$$got" ]; then \
+		echo "platform matrix drift between the Makefile and $(WORKFLOW):"; \
+		echo "  make:    $$want"; \
+		echo "  ci.yml:  $$got"; \
+		echo "fix one of them, then re-run: make check-platforms"; \
+		exit 1; \
+	fi; \
+	echo "platform matrix: $(words $(PLATFORMS)) triples, Makefile and CI agree"
+
 .PHONY: release
 release: clean ## Cross-compile all release binaries + checksums into bin/dist/
-	@mkdir -p $(DIST_DIR)
 	@for platform in $(PLATFORMS); do \
-		os=$${platform%/*}; arch=$${platform#*/}; \
-		ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
-		out="$(DIST_DIR)/$(BINARY)_$${os}_$${arch}$$ext"; \
-		echo "building $$out"; \
-		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 \
-			$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o "$$out" $(CMD) || exit 1; \
+		$(MAKE) --no-print-directory build-platform PLATFORM=$$platform VERSION=$(VERSION) || exit 1; \
 	done
 	@cd $(DIST_DIR) && sha256sum * > SHA256SUMS
 	@echo
