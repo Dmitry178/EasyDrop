@@ -1,8 +1,17 @@
-# 09 – Custom healthcheck path
+# 09 – Custom healthcheck path and scheme
 # After starting the container EasyDrop polls
-# `http://127.0.0.1:<host_port><health_check_path>` until it answers 200, and
-# aborts the deploy if it never does. The default "/" is wrong for apps that
+# `[http|https]://127.0.0.1:<host_port><health_check_path>` until it answers 200,
+# and aborts the deploy if it never does. The default "/" is wrong for apps that
 # only answer on a dedicated endpoint, or that redirect (302) on "/".
+#
+# The scheme is automatic by default: HTTP is tried, and on a miss HTTPS is tried
+# in the same attempt. That is what lets an app which speaks only TLS deploy at
+# all. Pin it with health_check_scheme when you know better:
+#   "http"  – never probe over TLS (the default probe ignores TLS anyway)
+#   "https" – skip the wasted first attempt, and fail rather than fall back
+# A redirect counts as a miss, not a pass: the probe deliberately does not
+# follow redirects, because that would let an app pass by bouncing the probe at
+# some unrelated 200 page.
 #
 # Point this at a cheap, dependency-light path. Do NOT point it at an endpoint
 # that requires your database to be reachable – that turns a slow start into a
@@ -15,6 +24,8 @@ name = "my-awesome-api"
 port = 8080
 # The endpoint must return 200 while the app is genuinely ready.
 health_check_path = "/healthz"
+# Uncomment to pin the scheme. "auto"/omitted = try HTTP, fall back to HTTPS.
+# health_check_scheme = "https"
 
 [server]
 host = "203.0.113.10"
