@@ -183,20 +183,54 @@ type serverRecord struct {
 type teardownInput struct {
 	AppName    string `json:"app_name" jsonschema:"application name to remove"`
 	ConfigPath string `json:"config_path,omitempty" jsonschema:"path to easydrop.toml"`
+	Purge      bool   `json:"purge,omitempty" jsonschema:"also delete the self-signed certificate for nginx.domain. Off by default: it is re-created on the next deploy, but re-trusting it in a browser costs the user a click. A Let's Encrypt certificate is never deleted"`
 }
 
-func handleTeardown(ctx context.Context, _ *sdk.CallToolRequest, in teardownInput) (*sdk.CallToolResult, textOut, error) {
+func handleTeardown(ctx context.Context, _ *sdk.CallToolRequest, in teardownInput) (*sdk.CallToolResult, teardownOut, error) {
 	if strings.TrimSpace(in.AppName) == "" {
-		return errResult("app_name is required")
+		return mcpErr[teardownOut]("app_name is required")
 	}
 	path := strings.TrimSpace(in.ConfigPath)
 	if path == "" {
 		path = defaultConfigPath
 	}
-	if err := deploy.Teardown(ctx, path, in.AppName); err != nil {
-		return errResult(fmt.Sprintf("teardown failed: %v", err))
+	res, err := deploy.Teardown(ctx, path, in.AppName, deploy.TeardownOptions{Purge: in.Purge})
+	if err != nil {
+		return mcpErr[teardownOut](fmt.Sprintf("teardown failed: %v", err))
 	}
-	return okResult(fmt.Sprintf("%s torn down (volumes kept)", in.AppName))
+	return &sdk.CallToolResult{
+		Content: []sdk.Content{&sdk.TextContent{Text: teardownReport(res)}},
+	}, teardownOut{
+		AppName:         res.AppName,
+		VolumesKept:     true,
+		IngressRemoved:  res.IngressRemoved,
+		IngressReloaded: res.IngressReloaded,
+		CertPurged:      res.CertPurged,
+		Note:            res.IngressNote,
+	}, nil
+}
+
+// teardownReport is the single wording of a teardown outcome, shared by the CLI
+// and this handler so an agent reads the same facts a human does (M15's rule,
+// applied here).
+func teardownReport(res *deploy.TeardownResult) string {
+	msg := fmt.Sprintf("%s torn down (named volumes kept)", res.AppName)
+	if res.IngressNote != "" {
+		msg += "\n" + res.IngressNote
+	}
+	if res.CertPurged {
+		msg += "\nself-signed certificate deleted; the next deploy issues a new one"
+	}
+	return msg
+}
+
+type teardownOut struct {
+	AppName         string `json:"app_name" jsonschema:"resolved application name"`
+	VolumesKept     bool   `json:"volumes_kept" jsonschema:"always true – easydrop never deletes named volumes"`
+	IngressRemoved  bool   `json:"ingress_removed" jsonschema:"whether the managed nginx vhost was deleted"`
+	IngressReloaded bool   `json:"ingress_reloaded" jsonschema:"whether nginx was reloaded; false means the old config is still live"`
+	CertPurged      bool   `json:"cert_purged,omitempty" jsonschema:"whether a self-signed certificate was deleted (purge only)"`
+	Note            string `json:"note,omitempty" jsonschema:"explanation when something was skipped or nginx could not be reloaded"`
 }
 
 type manageInput struct {
