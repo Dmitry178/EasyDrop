@@ -118,6 +118,35 @@ func applyNonPortDefaults(cfg *models.Config) error {
 	if strings.TrimSpace(cfg.App.HealthCheckPath) == "" {
 		cfg.App.HealthCheckPath = "/"
 	}
+	if err := validateNginx(&cfg.Nginx); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateNginx rejects the nginx combinations that cannot work, before a
+// container is built or a host is touched.
+//
+// The two TLS acquisition paths are not interchangeable and each has a
+// precondition the other does not: Let's Encrypt needs a publicly resolvable
+// domain, a self-signed leaf needs neither but does need a domain to name in the
+// certificate and in `server_name`.
+func validateNginx(n *models.NginxConfig) error {
+	domain := strings.TrimSpace(n.Domain)
+	if n.SelfSigned && !n.SSL {
+		return fmt.Errorf("validation error: nginx.self_signed requires nginx.ssl = true " +
+			"(self_signed selects how the certificate is obtained, not whether TLS is served)")
+	}
+	if n.SSL && domain == "" {
+		return fmt.Errorf("validation error: nginx.ssl = true requires a non-empty nginx.domain – " +
+			"there is nothing to certify. For a local TLS test set both nginx.domain and " +
+			"nginx.self_signed (e.g. domain = \"localhost\", self_signed = true)")
+	}
+	if n.SelfSigned {
+		if err := models.ValidateCertifiableDomain(domain); err != nil {
+			return fmt.Errorf("validation error: nginx.domain %w", err)
+		}
+	}
 	return nil
 }
 
