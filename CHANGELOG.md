@@ -5,7 +5,7 @@ All notable changes to EasyDrop are recorded in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## 1.0.0 - 2026-10-04
+## [1.0.0] - 2026-10-04
 
 First release: everything below ships in this version. Scope and limitations are
 documented in the [README](README.md); design rationale and closed decisions in
@@ -88,3 +88,5 @@ documented in the [README](README.md); design rationale and closed decisions in
 - `README.md` / `README_RU.md`, `PRD.md`, `ARCHITECTURE.md`, `docs/`, and nineteen
   annotated configs in [`examples/`](examples/) – every one validated by CI against
   the real parser, with the key reference table checked against the config structs.
+
+[1.0.0]: https://github.com/Dmitry178/EasyDrop/releases/tag/v1.0.0
