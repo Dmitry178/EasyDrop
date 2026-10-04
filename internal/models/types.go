@@ -24,6 +24,17 @@ type AppConfig struct {
 	// Blue-Green managed pair is {HostPort, HostPort+1}.
 	HostPort        int    `toml:"host_port,omitempty"`
 	HealthCheckPath string `toml:"health_check_path,omitempty"` // Default: "/"
+	// HealthCheckScheme is the scheme the deploy probe uses against the
+	// container: "http", "https", or "" for auto. Default auto tries HTTP and
+	// falls back to HTTPS within the same attempt.
+	//
+	// The fallback exists because an app that answers only over TLS – or that
+	// redirects everything to HTTPS, which is what most nginx front-ends do –
+	// otherwise could never be deployed by a tool that probes plain HTTP and
+	// demands a 200. Auto decides on a redirect, not on a blind `-L`: following
+	// every redirect would let an app pass by redirecting the probe at some
+	// unrelated 200 page.
+	HealthCheckScheme string `toml:"health_check_scheme,omitempty"`
 }
 
 type ServerConfig struct {
