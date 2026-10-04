@@ -16,7 +16,14 @@ COVER_FILE  := $(BIN_DIR)/coverage.out
 
 # Version is stamped into internal/version.Version (used by `--version` and
 # the MCP serverInfo). Override explicitly for releases: `make build VERSION=1.2.3`.
-VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+#
+# The leading `v` of a tag is stripped: `git describe` returns the tag name
+# verbatim, so without this a local build after tagging would report
+# `v1.0.0` while the tagged CI release reports `1.0.0`. A commit hash has no
+# `v` to strip, and a repo with no commits falls back to `dev` rather than to an
+# empty string.
+VERSION     ?= $(shell _v=$$(git describe --tags --always --dirty 2>/dev/null); \
+	if [ -n "$$_v" ]; then echo "$${_v#v}"; else echo dev; fi)
 LDFLAGS     := -s -w -X easydrop/internal/version.Version=$(VERSION)
 
 # PREFIX follows the usual GNU layout, so the binary lands in $(PREFIX)/bin.
