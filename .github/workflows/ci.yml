@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# The workflow only ever needs to read the repository. Release publishing is a
+# deliberate, separate step – see the tag job below.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The authoritative gate. Everything else may fail, but a red verify means
+  # nothing else was worth looking at.
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          # go.mod is the single source of truth for the toolchain, so CI cannot
+          # drift onto a Go version the project does not claim to support.
+          go-version-file: go.mod
+          cache: true
+      - name: Platform matrix is in sync with the Makefile
+        run: make check-platforms
+      - name: gofmt, go vet, tests
+        run: make verify
+      - name: tests under the race detector
+        run: make test-race
+
+  # Real end-to-end on a runner with a docker daemon: builds a throwaway image,
+  # deploys it, checks status and logs. `make verify` proves the unit contract;
+  # this proves the product still works.
+  smoke:
+    name: smoke (end-to-end)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make smoke
+
+  # Cross-compilation. Every triple builds on one Linux runner: CGO is off
+  # everywhere, so no cross toolchain is involved and a per-OS runner would only
+  # add minutes. One job per triple anyway, so a break names the platform
+  # instead of "the release job".
+  build:
+    name: build ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            artifact: easydrop-linux-amd64
+          - platform: linux/arm64
+            artifact: easydrop-linux-arm64
+          - platform: darwin/amd64
+            artifact: easydrop-darwin-amd64
+          - platform: darwin/arm64
+            artifact: easydrop-darwin-arm64
+          - platform: windows/amd64
+            artifact: easydrop-windows-amd64
+          - platform: windows/arm64
+            artifact: easydrop-windows-arm64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        run: make build-platform PLATFORM=${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: bin/dist/*
+          if-no-files-found: error
+
+  # A cross-compiled binary is never *run* by the build job, so a platform whose
+  # tests behave differently would ship green. These run the suite natively.
+  test-native:
+    name: test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./... -count=1
+
+  # On a tag: one run over every platform with checksums, attached as a single
+  # artifact. Publishing to a release page is left to a human – a broken
+  # auto-publish is worse than a manual step.
+  release:
+    name: release artifacts
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Stamp the binary with the tag, not the commit hash
+        run: make release VERSION="${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: easydrop-${GITHUB_REF_NAME}
+          path: |
+            bin/dist/*
+            bin/dist/SHA256SUMS
+          if-no-files-found: error
