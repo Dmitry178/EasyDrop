@@ -244,7 +244,9 @@ func TestCertPaths(t *testing.T) {
 // fixed certificate for `cat`.
 type catFake struct {
 	existing   string
+	stdout     map[string]string
 	noCertFile bool
+	noVhost    bool
 	uploads    map[string]string
 	calls      []string
 	script     map[string]error
@@ -269,6 +271,9 @@ func (f *catFake) scriptTLS() {
 
 func (f *catFake) ExecCommand(_ context.Context, cmd string) (string, string, int, error) {
 	f.calls = append(f.calls, cmd)
+	if out, ok := f.stdout[cmd]; ok {
+		return out, "", 0, nil
+	}
 	if f.script != nil {
 		if err, ok := f.script[cmd]; ok {
 			if err != nil {
@@ -278,6 +283,11 @@ func (f *catFake) ExecCommand(_ context.Context, cmd string) (string, string, in
 		}
 	}
 	switch {
+	case strings.HasPrefix(cmd, "sudo test -e"):
+		if f.noVhost {
+			return "", "exit 1", 1, fmt.Errorf("fake: exit 1")
+		}
+		return "", "", 0, nil
 	case strings.HasPrefix(cmd, "sudo mkdir"):
 		return "", "", 0, nil
 	case strings.HasPrefix(cmd, "sudo test -f"):
@@ -469,5 +479,118 @@ func TestGeneratedCertVerifiesInGoTLS(t *testing.T) {
 		}); err != nil {
 			t.Errorf("certificate must verify for %q: %v", name, err)
 		}
+	}
+}
+
+// --- purge (M19) --------------------------------------------------------
+
+func TestRemoveCertDeletesBothFiles(t *testing.T) {
+	f := &catFake{}
+	f.script = map[string]error{
+		"sudo test -f '/etc/nginx/ssl/localhost.crt'": nil,
+		"sudo test -f '/etc/nginx/ssl/localhost.key'": nil,
+		"sudo rm -f '/etc/nginx/ssl/localhost.crt'":   nil,
+		"sudo rm -f '/etc/nginx/ssl/localhost.key'":   nil,
+	}
+	c := NewSelfSignedCertifier(f)
+	c.Out = &bytes.Buffer{}
+
+	removed, err := c.RemoveCert(t.Context(), "localhost")
+	if err != nil {
+		t.Fatalf("RemoveCert: %v", err)
+	}
+	if !removed {
+		t.Error("removal must be reported")
+	}
+	for _, path := range []string{
+		"/etc/nginx/ssl/localhost.crt",
+		"/etc/nginx/ssl/localhost.key",
+	} {
+		if !f.ran("sudo rm -f '" + path + "'") {
+			t.Errorf("%s must be deleted, ran: %v", path, f.calls)
+		}
+	}
+}
+
+func TestRemoveCertIsIdempotent(t *testing.T) {
+	f := &catFake{}
+	f.noCertFile = true
+	c := NewSelfSignedCertifier(f)
+	c.Out = &bytes.Buffer{}
+
+	removed, err := c.RemoveCert(t.Context(), "localhost")
+	if err != nil {
+		t.Fatalf("a missing certificate is not an error: %v", err)
+	}
+	if removed {
+		t.Error("nothing was deleted, and the result must not claim otherwise")
+	}
+	if f.ran("rm -f") {
+		t.Errorf("no removal command may run when there is nothing to remove: %v", f.calls)
+	}
+}
+
+func TestRemoveCertRejectsBadDomain(t *testing.T) {
+	f := &catFake{}
+	c := NewSelfSignedCertifier(f)
+	c.Out = &bytes.Buffer{}
+	for _, domain := range []string{"*.example.com", "", "a;rm -rf /.crt"} {
+		if _, err := c.RemoveCert(t.Context(), domain); err == nil {
+			t.Errorf("domain %q must be refused", domain)
+		}
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("no host command on invalid input: %v", f.calls)
+	}
+}
+
+// --- Describe (status) --------------------------------------------------
+
+func TestDescribeReportsExpiry(t *testing.T) {
+	f := &catFake{existing: mustGenerateCert(t, "localhost", certValidity)}
+	c := NewSelfSignedCertifier(f)
+	c.Out = &bytes.Buffer{}
+	got, err := c.Describe(t.Context(), "localhost")
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if !strings.Contains(got, "self-signed") || !strings.Contains(got, "expires") {
+		t.Errorf("status must name the mode and the expiry, got %q", got)
+	}
+	if strings.Contains(got, "EXPIRING") {
+		t.Errorf("a fresh certificate must not be reported as expiring, got %q", got)
+	}
+}
+
+func TestDescribeFlagsExpiringCertificate(t *testing.T) {
+	// The whole reason status reads the file: an expiring certificate is the one
+	// thing the user can act on before it breaks.
+	f := &catFake{existing: mustGenerateCert(t, "localhost", 24*time.Hour)}
+	c := NewSelfSignedCertifier(f)
+	c.Out = &bytes.Buffer{}
+	got, _ := c.Describe(t.Context(), "localhost")
+	if !strings.Contains(got, "EXPIRING") {
+		t.Errorf("a certificate inside the renewal window must be flagged, got %q", got)
+	}
+}
+
+func TestDescribeReportsMissingCertificate(t *testing.T) {
+	// "no answer" and "certificate missing" must not look alike.
+	f := &catFake{noCertFile: true}
+	c := NewSelfSignedCertifier(f)
+	c.Out = &bytes.Buffer{}
+	got, _ := c.Describe(t.Context(), "localhost")
+	if !strings.Contains(got, "missing") {
+		t.Errorf("a missing certificate must be named, got %q", got)
+	}
+}
+
+func TestDescribeReportsUnreadableCertificate(t *testing.T) {
+	f := &catFake{existing: "garbage"}
+	c := NewSelfSignedCertifier(f)
+	c.Out = &bytes.Buffer{}
+	got, _ := c.Describe(t.Context(), "localhost")
+	if !strings.Contains(got, "unreadable") {
+		t.Errorf("an unparseable certificate must be named, got %q", got)
 	}
 }
