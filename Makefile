@@ -13,6 +13,8 @@ CMD         := ./cmd/easydrop
 BIN_DIR     := bin
 DIST_DIR    := $(BIN_DIR)/dist
 COVER_FILE  := $(BIN_DIR)/coverage.out
+VERSION_FILE := internal/version/version.go
+CHANGELOG   := CHANGELOG.md
 
 # Version is stamped into internal/version.Version (used by `--version` and
 # the MCP serverInfo). Override explicitly for releases: `make build VERSION=1.2.3`.
@@ -131,8 +133,29 @@ cover: ## Run tests with coverage and open the HTML report
 	$(GO) tool cover -func=$(COVER_FILE) | tail -1
 	@echo "html report: file://$(PWD)/$(COVER_FILE)"
 
+.PHONY: check-version
+check-version: ## Fail unless the source version and CHANGELOG match EXPECTED (e.g. EXPECTED=1.0.0)
+	@test -n "$(EXPECTED)" || { echo "usage: make check-version EXPECTED=1.0.0"; exit 1; }
+	@src=$$(sed -n 's/^var Version = "\(.*\)"$$/\1/p' $(VERSION_FILE)); \
+	if [ -z "$$src" ]; then echo "could not read 'var Version' from $(VERSION_FILE)"; exit 1; fi; \
+	if [ "$$src" != "$(EXPECTED)" ]; then \
+		echo "version mismatch – a release whose binary reports a different number"; \
+		echo "  than its tag is worse than no release at all:"; \
+		echo "  tag / EXPECTED: $(EXPECTED)"; \
+		echo "  $(VERSION_FILE): $$src"; \
+		echo "fix $(VERSION_FILE), or tag $$src instead."; \
+		exit 1; \
+	fi; \
+	if [ -f $(CHANGELOG) ] && ! grep -qF "## [$(EXPECTED)]" $(CHANGELOG) \
+		&& ! grep -qF "## $(EXPECTED)" $(CHANGELOG); then \
+		echo "$(CHANGELOG) has no '## [$(EXPECTED)]' entry – add the release notes"; \
+		echo "before tagging, or bump the version if this change is not part of $(EXPECTED)."; \
+		exit 1; \
+	fi; \
+	echo "version: $(EXPECTED) matches $(VERSION_FILE) and $(CHANGELOG)"
+
 .PHONY: verify
-verify: fmtcheck vet test ## CI gate: formatting + vet + tests
+verify: fmtcheck vet check-platforms test ## CI gate: formatting + vet + platform matrix + tests
 
 .PHONY: ci
 ci: verify ## Alias for `make verify`
@@ -165,7 +188,7 @@ build-platform:
 # platforms is two chances to ship a release that quietly stops building for
 # one of them, so CI treats the disagreement as an error rather than a nit.
 .PHONY: check-platforms
-check-platforms:
+check-platforms: ## Fail if the CI matrix and PLATFORMS disagree
 	@if [ ! -f "$(WORKFLOW)" ]; then echo "$(WORKFLOW) not present, nothing to compare"; exit 0; fi
 	@want=$$(for p in $(PLATFORMS); do echo $$p | tr / -; done | sort | tr '\n' ' '); \
 	got=$$(grep -oE 'platform: (linux|darwin|windows)/[a-z0-9]+' "$(WORKFLOW)" \
