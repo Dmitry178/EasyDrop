@@ -105,14 +105,16 @@ jobs:
           cache: true
       - run: go test ./... -count=1
 
-  # On a tag: one run over every platform with checksums, attached as a single
-  # artifact. Publishing to a release page is left to a human – a broken
-  # auto-publish is worse than a manual step.
+  # On a tag: build every platform, then publish the release page itself.
+  # `contents: write` is scoped to this one job — the rest of the workflow stays
+  # read-only, so no other job can touch the repository.
   release:
-    name: release artifacts
+    name: release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [verify, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -129,8 +131,33 @@ jobs:
         run: make release VERSION="${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@v4
         with:
-          name: easydrop-${GITHUB_REF_NAME}
-          path: |
-            bin/dist/*
-            bin/dist/SHA256SUMS
+          # ${{ github.ref_name }}, not ${GITHUB_REF_NAME}: an action input is not
+          # a shell, so shell parameter expansion is passed through literally and
+          # the artifact gets named after the variable. Only `run:` expands
+          # $GITHUB_REF_NAME. Guarded by `make check-workflow`.
+          name: easydrop-${{ github.ref_name }}
+          path: bin/dist/*
           if-no-files-found: error
+      # Publishing is idempotent on purpose: a re-run of this workflow – a flaky
+      # test rerun, a re-pushed tag on a rebuilt commit – must replace the assets
+      # rather than fail on "release already exists". `gh release upload
+      # --clobber` is the difference between a rerun and a stuck pipeline.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists – replacing its assets"
+            gh release upload "$TAG" bin/dist/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "EasyDrop $TAG" \
+              --generate-notes \
+              bin/dist/*
+          fi
+          echo
+          gh release view "$TAG" --json name,tagName,url,assets \
+            --jq '"release \(.name) (\(.tagName)) -> \(.url)",
+                  (.assets[] | "  \(.name)")'
