@@ -631,6 +631,13 @@ passed locally, which proved the *types* compile and nothing more – a distinct
 worth remembering, because type-checking a platform is exactly the check that is
 misread as "it works there".
 
+### Action runtime
+
+Pinned to `actions/upload-artifact@v7` (Node 24) so the Node-20 deprecation notice
+stops on every job; `checkout@v5` and `setup-go@v6` were already Node 24. The
+repo itself uses no Node.js. Note that v5 is still Node 20 – `@latest` alone would
+not have fixed it.
+
 ### The artifact that was named after a variable
 
 The first tagged run uploaded an artifact literally called
