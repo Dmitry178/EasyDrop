@@ -32,6 +32,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 18:** TLS for local and internal hosts – a self-signed leaf that easydrop generates, installs and serves, so `nginx.ssl = true` stops being a silent no-op on `localhost` – DONE (`nginx.self_signed`, §6.2A; `infra.SelfSignedCertifier`, pure-Go P-256 with SANs, §6.3; `templates/nginx-tls.conf.tmpl` serving `:80` and `:443`, §6.1).
 - [x] **Milestone 19:** `teardown` leaves nothing serving – the managed nginx vhost goes with the containers, `status` finally reports TLS, and the self-signed certificate is purged only on request – DONE (`NginxManager.RemoveIngress` + `TLSStatus` from `nginx -T`, §6.1; `SelfSignedCertifier.RemoveCert`, §6.2A; `deploy.Teardown(TeardownOptions{Purge})` returning a `TeardownResult`, §5.4; `--purge` / `teardown_app {purge}`). Details in §5.2, §5.4 and §6.1.
 - [x] **Milestone 20:** TLS is understood in both modes and by both instruments – the deploy probe can talk to an app that answers only over HTTPS, and `status` reports the expiry of the certificate nginx actually serves, in either mode – DONE (`app.health_check_scheme` plus the auto HTTP→HTTPS fallback in `probe`, §5.1; `TLSStatus` parses the served certificate instead of trusting config or the mode, §6.1; `SelfSignedCertifier.Describe` removed as superseded). Details in §5.1 and §6.1.
+- [x] **Milestone 21:** the CI matrix stopped being a source of false confidence and a source of real bugs – the Windows and macOS native test jobs run, and the four portability defects they exposed on their first run are fixed. See §10A.
 
 > Locked decisions (see ARCHITECTURE.md §5): single binary `cmd/easydrop/main.go`;
 > TOML `github.com/pelletier/go-toml/v2`; CLI `cobra` (no `viper`);
@@ -608,3 +609,48 @@ export EASYDROP_STAGING_BASE=~/easydrop-staging   # non-hidden, daemon-visible
 - Hosts prepared by our own `Bootstrapper` install Docker via `get.docker.com` (apt) and are therefore **never** affected – snap only matters when EasyDrop targets a pre-existing snap-docker host (dev boxes, some managed images).
 - Installing Docker from snap instead of apt, or relaxing the snap confinement, is explicitly out of scope: the mitigation above keeps EasyDrop working without changing the host's packaging.
 - Verified end-to-end on a snap host: remote build + Compose deploy → status → logs → re-deploy → rollback → teardown, and `build.strategy = "local"` against a real `registry:2`.
+
+---
+
+## §10A. Cross-platform CI and the portability contract
+
+`.github/workflows/ci.yml` has two distinct kinds of job, and conflating them is the
+usual way a matrix becomes decorative:
+
+- **`build` (6 triples, one Linux runner).** Cross-compilation with `CGO_ENABLED=0`.
+  It proves the code *compiles* for each target. It never *runs* it.
+- **`test-native` (ubuntu / macos / windows).** Proves the suite *runs* on each
+  host OS. A cross-compiled binary is never executed by this repo's CI, so without
+  these jobs a platform whose tests behave differently would ship green.
+
+The native jobs earned their place on their first run: they failed, and the failures
+were real rather than environmental. `go vet` for `GOOS=darwin|windows` had already
+passed locally, which proved the *types* compile and nothing more – a distinction
+worth remembering, because type-checking a platform is exactly the check that is
+misread as "it works there".
+
+### What the first run found
+
+| Failure | Class | Verdict |
+|---|---|---|
+| `examples_docs_test.go` parsed 0 keys on Windows | **Bug in our test** – `core.autocrlf` turns the heading into `## Configuration keys\r`, and the heading comparison was an exact match | Fixed: `TrimRight(raw, "\r")`, plus `TestDocumentedKeysSurviveCRLF` as a regression lock. Verified by reverting the one-line fix and watching the new test fail with `0 keys` against `21` in the LF original |
+| `env_test.go` expected `/` in the expanded `~` path | **Bug in our test** – asserted the runner's path separator, not the expansion | Fixed: `filepath.Join(".ssh", "id_ed25519")` |
+| `TestBootstrapRealLocalExecutor` wanted `ID=` in the log | **Bug in our test** – asserted the Linux branch on every host | Fixed: asserts the branch that applies to the host. macOS and Windows now verify their real behaviour (the soft warning) instead of being skipped |
+| `UploadFile` 644, tar mode 755, vault 600 → `666` | **Not fixable in the test** – Windows has no POSIX mode bits | Asserted only where the bits exist; the vault case is below |
+
+### The vault is a real finding, not a test artifact
+
+The Windows failure `vault perm = 666, want 600` looked cosmetic next to the others.
+It is not. The MCP server vault holds SSH passwords, easydrop writes it `0600` on
+POSIX hosts, and **on Windows it is readable by every local user**: Go creates files
+as `0666` and the protection would have to be an ACL entry, which easydrop does not
+set. Nothing in the test could have caught this by passing – it was found *because*
+the assertion failed.
+
+The fix is not to make the test green. The test now logs the mode and states what it
+means, and the limitation is documented in both READMEs under *Scope and
+Limitations*. Deploying *to* Windows was never supported (targets are Debian/Ubuntu);
+this only affects easydrop running as an MCP server on a Windows host, and the
+documented guidance is to use `server.ssh_key` and skip `manage_server` there.
+Closing it properly would mean setting a Windows DACL from Go – a deliberate feature,
+not a CI fix.
