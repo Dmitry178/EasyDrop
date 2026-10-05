@@ -1,5 +1,7 @@
 name: CI
 
+# Action versions are pinned to a major that runs on Node 24, so GitHub does not
+# warn on every job. Nothing in this repository uses Node.js.
 on:
   push:
     branches: [main, master]
@@ -82,7 +84,7 @@ jobs:
           cache: true
       - name: Build
         run: make build-platform PLATFORM=${{ matrix.platform }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: bin/dist/*
@@ -129,7 +131,7 @@ jobs:
         run: make check-version EXPECTED="${GITHUB_REF_NAME#v}"
       - name: Stamp the binary with the tag, not the commit hash
         run: make release VERSION="${GITHUB_REF_NAME#v}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           # ${{ github.ref_name }}, not ${GITHUB_REF_NAME}: an action input is not
           # a shell, so shell parameter expansion is passed through literally and
