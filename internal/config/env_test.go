@@ -248,7 +248,10 @@ registry = "${EASYDROP_REGISTRY}"
 		t.Errorf("registry = %q, want it resolved from .env", cfg.Build.Registry)
 	}
 	// The ":-" default was used, and "~" expansion still ran afterwards.
-	if !strings.HasSuffix(cfg.Server.SSHKey, "/.ssh/id_ed25519") || strings.HasPrefix(cfg.Server.SSHKey, "~") {
+	// filepath.Join, not a literal "/": on Windows the expanded path is
+	// C:\Users\<user>\.ssh\id_ed25519, and asserting the forward-slash form
+	// there tested the runner's path separator rather than the expansion.
+	if !strings.HasSuffix(cfg.Server.SSHKey, filepath.Join(".ssh", "id_ed25519")) || strings.HasPrefix(cfg.Server.SSHKey, "~") {
 		t.Errorf("ssh_key = %q, want the default with ~ expanded", cfg.Server.SSHKey)
 	}
 }
