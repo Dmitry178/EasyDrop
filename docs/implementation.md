@@ -4,7 +4,9 @@ This document outlines the chronological execution order, core data contracts, a
 
 > **Developer workflow:** the repo ships a `Makefile` – `make` lists all targets, `make build` compiles the binary (version stamped from `git describe`), `make verify` is the CI gate (gofmt + `go vet` + tests), `make test-race` runs the race detector, `make cover` writes `bin/coverage.out`, `make release` cross-compiles all six platform binaries with `SHA256SUMS` (NFR-03), and `make smoke` deploys a throwaway app to the local docker daemon end-to-end. See README § Development.
 >
-> **Continuous integration:** `.github/workflows/ci.yml` runs `verify` (incl. `make check-platforms`), a real `smoke`, one `build` job per platform triple, native test runs on Linux/macOS/Windows, and – on a `v*` tag – a `release` job attaching every binary plus `SHA256SUMS`. `PLATFORMS` in the `Makefile` is the single source of truth; the workflow repeats it and `check-platforms` fails the build on drift, so a release cannot quietly stop building for one platform.
+> **Continuous integration:** `.github/workflows/ci.yml` runs `verify` (incl. `make check-platforms`), a real `smoke`, one `build` job per platform triple, native test runs on Linux/macOS/Windows, and – on a `v*` tag – a `release` job attaching every binary plus `SHA256SUMS`. Debugging needs no tag at all: a plain push to `main` runs everything except `release`.
+>
+> **Two drift guards, both deliberately cheap and both before any artifact exists.** `PLATFORMS` in the `Makefile` is the single source of truth and the workflow repeats it; `make check-platforms` fails `verify` on drift, so a release cannot quietly stop building for one platform. `make check-version EXPECTED=<tag>` is the first step of `release`: a tag whose number disagrees with `internal/version.Version` or with the `CHANGELOG.md` heading is refused. Both lists are hand-maintained next to code they describe, which is exactly the arrangement that drifts silently otherwise.
 
 ---
 
@@ -32,7 +34,7 @@ Development is decoupled into isolated milestones. Proceeding to a subsequent mi
 - [x] **Milestone 18:** TLS for local and internal hosts – a self-signed leaf that easydrop generates, installs and serves, so `nginx.ssl = true` stops being a silent no-op on `localhost` – DONE (`nginx.self_signed`, §6.2A; `infra.SelfSignedCertifier`, pure-Go P-256 with SANs, §6.3; `templates/nginx-tls.conf.tmpl` serving `:80` and `:443`, §6.1).
 - [x] **Milestone 19:** `teardown` leaves nothing serving – the managed nginx vhost goes with the containers, `status` finally reports TLS, and the self-signed certificate is purged only on request – DONE (`NginxManager.RemoveIngress` + `TLSStatus` from `nginx -T`, §6.1; `SelfSignedCertifier.RemoveCert`, §6.2A; `deploy.Teardown(TeardownOptions{Purge})` returning a `TeardownResult`, §5.4; `--purge` / `teardown_app {purge}`). Details in §5.2, §5.4 and §6.1.
 - [x] **Milestone 20:** TLS is understood in both modes and by both instruments – the deploy probe can talk to an app that answers only over HTTPS, and `status` reports the expiry of the certificate nginx actually serves, in either mode – DONE (`app.health_check_scheme` plus the auto HTTP→HTTPS fallback in `probe`, §5.1; `TLSStatus` parses the served certificate instead of trusting config or the mode, §6.1; `SelfSignedCertifier.Describe` removed as superseded). Details in §5.1 and §6.1.
-- [x] **Milestone 21:** the CI matrix stopped being a source of false confidence and a source of real bugs – the Windows and macOS native test jobs run, and the four portability defects they exposed on their first run are fixed. See §10A.
+- [x] **Milestone 21:** the CI matrix stopped being a source of false confidence and a source of real bugs – the Windows and macOS native test jobs run, the four portability defects they exposed on their first run are fixed, and `check-version` makes a mismatched tag a build failure rather than a mystery. See §10A.
 
 > Locked decisions (see ARCHITECTURE.md §5): single binary `cmd/easydrop/main.go`;
 > TOML `github.com/pelletier/go-toml/v2`; CLI `cobra` (no `viper`);
@@ -628,6 +630,24 @@ were real rather than environmental. `go vet` for `GOOS=darwin|windows` had alre
 passed locally, which proved the *types* compile and nothing more – a distinction
 worth remembering, because type-checking a platform is exactly the check that is
 misread as "it works there".
+
+### Release hygiene: `check-version`
+
+A tag is the only thing that triggers the `release` job, and it is also the one
+input nobody re-reads before shipping. Two lists can disagree with the tag: the
+`var Version` the binary stamps into `--version` and the MCP `serverInfo`, and the
+`## [x.y.z]` heading in `CHANGELOG.md`. When they do, the failure is invisible —
+`v1.1.0` ships binaries that report `1.0.0`, and nobody notices until a user files
+a bug quoting a version that does not exist.
+
+`make check-version EXPECTED=<tag>` closes that, and it runs as the **first** step
+of `release` so the failure names the mismatch instead of producing an artifact
+nobody will re-check. It reads the version out of the source with `sed` rather than
+`grep -oP`, so it behaves the same on a macOS or BSD `grep`, and it accepts either
+`## [1.0.0]` or `## 1.0.0` in the changelog.
+
+Both guards are part of the same lesson as §10A: a check that runs *before* the
+artifact is cheap and unambiguous, and the same check after it is a support ticket.
 
 ### What the first run found
 
