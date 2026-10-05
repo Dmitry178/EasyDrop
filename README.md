@@ -492,6 +492,7 @@ make release    # cross-compile linux/darwin/windows × amd64/arm64 + SHA256SUMS
 make platforms  # list the release platforms, one per line
 make build-platform PLATFORM=darwin/arm64    # compile just one triple
 make check-platforms    # fail if the CI matrix and the Makefile disagree
+make check-version EXPECTED=1.0.0   # fail if the source version and CHANGELOG disagree
 make smoke      # end-to-end deploy of a throwaway app on the local docker daemon
 ```
 
@@ -508,9 +509,19 @@ runs on every push and pull request:
 | `test-native` | the suite runs natively on Linux, macOS and Windows – a cross-compiled binary is never *run* by the build job |
 | `release` | on a `v*` tag: every platform plus `SHA256SUMS`, attached as one artifact |
 
-The platform list lives in the `Makefile` (`PLATFORMS`), and the workflow repeats
-it; `make check-platforms` runs in `verify` and fails the build if the two ever
-drift apart. Publishing to a release page is deliberately left to a human.
+Two drift guards run before anything is built, because both failure modes are
+silent otherwise:
+
+- `make check-platforms` runs in `verify`. The platform list lives in the
+  `Makefile` (`PLATFORMS`) and the workflow repeats it; if the two ever diverge,
+  the build stops.
+- `make check-version EXPECTED=<tag>` runs first in `release`. It refuses to
+  publish a tag whose number disagrees with `internal/version.Version` or with the
+  `CHANGELOG.md` heading — a release whose binaries report a different version
+  than the tag they were published under is worse than no release, and nothing
+  downstream would notice.
+
+Publishing to a release page is deliberately left to a human.
 
 > **Snap-docker hosts:** a snap-confined daemon has its own mount namespace – it cannot see host `/tmp`, cannot read hidden (`dot-`) files in `$HOME`, and resolves `$HOME` to a snap path inside its own commands. EasyDrop detects this, fails fast with an actionable message, and automatically keeps Compose/Swarm state in a non-hidden `~/easydrop` directory. To build, set `EASYDROP_STAGING_BASE` to a **non-hidden** path under `$HOME` (e.g. `~/easydrop-staging`); `make smoke` does this automatically. Hosts bootstrapped by easydrop use apt Docker and never hit these limits. Full reference: [`docs/implementation.md §10`](docs/implementation.md).
 
