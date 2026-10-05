@@ -4,7 +4,7 @@ This document outlines the chronological execution order, core data contracts, a
 
 > **Developer workflow:** the repo ships a `Makefile` – `make` lists all targets, `make build` compiles the binary (version stamped from `git describe`), `make verify` is the CI gate (gofmt + `go vet` + tests), `make test-race` runs the race detector, `make cover` writes `bin/coverage.out`, `make release` cross-compiles all six platform binaries with `SHA256SUMS` (NFR-03), and `make smoke` deploys a throwaway app to the local docker daemon end-to-end. See README § Development.
 >
-> **Continuous integration:** `.github/workflows/ci.yml` runs `verify` (incl. `make check-platforms`), a real `smoke`, one `build` job per platform triple, native test runs on Linux/macOS/Windows, and – on a `v*` tag – a `release` job attaching every binary plus `SHA256SUMS`. Debugging needs no tag at all: a plain push to `main` runs everything except `release`.
+> **Continuous integration:** `.github/workflows/ci.yml` runs `verify` (incl. `make check-platforms`), a real `smoke`, one `build` job per platform triple, native test runs on Linux/macOS/Windows, and – on a `v*` tag – a `release` job that builds every binary plus `SHA256SUMS` and publishes the GitHub release from them (`contents: write` scoped to that job alone). Debugging needs no tag at all: a plain push to `main` runs everything except `release`.
 >
 > **Two drift guards, both deliberately cheap and both before any artifact exists.** `PLATFORMS` in the `Makefile` is the single source of truth and the workflow repeats it; `make check-platforms` fails `verify` on drift, so a release cannot quietly stop building for one platform. `make check-version EXPECTED=<tag>` is the first step of `release`: a tag whose number disagrees with `internal/version.Version` or with the `CHANGELOG.md` heading is refused. Both lists are hand-maintained next to code they describe, which is exactly the arrangement that drifts silently otherwise.
 
@@ -630,6 +630,45 @@ were real rather than environmental. `go vet` for `GOOS=darwin|windows` had alre
 passed locally, which proved the *types* compile and nothing more – a distinction
 worth remembering, because type-checking a platform is exactly the check that is
 misread as "it works there".
+
+### The artifact that was named after a variable
+
+The first tagged run uploaded an artifact literally called
+`easydrop-${GITHUB_REF_NAME}` – 30 MB of correct binaries under a name that meant
+nothing. The cause is a distinction that is invisible in the YAML: **an action
+input is not a shell.** `run:` executes in a shell, so `${GITHUB_REF_NAME#v}`
+expands there; `name:`, `path:` and friends are plain strings passed to the
+action, where `$VAR` is literal text and only `${{ expr }}` is expanded. The
+`${{ }}` form sitting a few lines above in the same file made the shell form look
+correct by analogy.
+
+`make check-workflow` now fails `verify` on that class of mistake: any bare
+`$VAR` / `${VAR}` in a YAML scalar that is not a `run:` or `env:` block. It is a
+grep, not a YAML parser, and the escape through `make` is itself worth recording –
+the first version of the pattern lost its `\$` to make's own expansion and flagged
+every line containing an uppercase word (`name: CI`, `'refs/tags/v'`). The
+negative cases are checked too: a legitimate `${{ matrix.os }}` in an action input
+and a legitimate `$GITHUB_REF_NAME` inside `run:` must both stay quiet, or the
+guard is worse than nothing because people learn to ignore it.
+
+### Publishing the release, and why the step is idempotent
+
+The `release` job is the only one with `contents: write`; everything else stays
+read-only. It runs `check-version`, builds, and then publishes.
+
+Publication was originally left to a human, on the theory that a broken
+auto-publish is worse than a manual step. That reasoning was right while the
+pipeline was unproven and wrong once it worked: a manual upload is seven files
+with platform names in them, and the realistic failure is shipping five of six
+binaries, or none of the checksums. The publish step is `gh release create`,
+which is a thin wrapper over an API call that either works or reports why.
+
+It is **idempotent by design**: if the release already exists the step uploads
+with `--clobber` instead of failing. That is not defensive decoration – a re-run
+is the normal case when a flaky test is retried or a tag is re-pushed onto a
+rebuilt commit, and without it the pipeline would be stuck on "release already
+exists" with nothing left to do. Re-running produces a release with the same tag
+and freshly built assets, which is the honest state of that tag.
 
 ### Release hygiene: `check-version`
 
