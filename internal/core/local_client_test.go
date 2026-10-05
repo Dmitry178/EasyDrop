@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -74,7 +75,11 @@ func TestLocalExecutorUploadFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat dst: %v", err)
 	}
-	if info.Mode().Perm() != 0644 {
+	if runtime.GOOS == "windows" {
+		// Go reports 0666 on Windows for every regular file; there are no POSIX
+		// mode bits to check.
+		t.Logf("dst mode on Windows = %o", info.Mode().Perm())
+	} else if info.Mode().Perm() != 0644 {
 		t.Errorf("dst perm = %o, want 644", info.Mode().Perm())
 	}
 }
