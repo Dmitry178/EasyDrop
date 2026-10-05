@@ -133,6 +133,23 @@ cover: ## Run tests with coverage and open the HTML report
 	$(GO) tool cover -func=$(COVER_FILE) | tail -1
 	@echo "html report: file://$(PWD)/$(COVER_FILE)"
 
+.PHONY: check-workflow
+check-workflow: ## Fail if the CI workflow uses shell variables outside a run: block
+	@if [ ! -f "$(WORKFLOW)" ]; then echo "$(WORKFLOW) not present, nothing to check"; exit 0; fi
+	@hits=$$(grep -nE '^[[:space:]]*[A-Za-z-]+:[[:space:]].*\$$\{?[A-Z][A-Z0-9_]*\}?' "$(WORKFLOW)" \
+		| grep -vE ':[[:space:]]*(run|env):' \
+		| grep -vE ':[[:space:]]*\$\{\{' ); \
+	if [ -n "$$hits" ]; then \
+		echo "shell-style variables outside a run: block in $(WORKFLOW):"; \
+		echo "$$hits" | sed 's/^/  /'; \
+		echo; \
+		echo "an action input (name, path, if-no-files-found …) is not a shell:"; \
+		echo "  \$$VAR / \$${VAR} are passed through literally, \$${{ expr }} is expanded."; \
+		echo "use \$${{ github.ref_name }} in an action input, keep \$$GITHUB_REF_NAME in run:."; \
+		exit 1; \
+	fi; \
+	echo "workflow: no shell variables outside run: blocks"
+
 .PHONY: check-version
 check-version: ## Fail unless the source version and CHANGELOG match EXPECTED (e.g. EXPECTED=1.0.0)
 	@test -n "$(EXPECTED)" || { echo "usage: make check-version EXPECTED=1.0.0"; exit 1; }
@@ -155,7 +172,7 @@ check-version: ## Fail unless the source version and CHANGELOG match EXPECTED (e
 	echo "version: $(EXPECTED) matches $(VERSION_FILE) and $(CHANGELOG)"
 
 .PHONY: verify
-verify: fmtcheck vet check-platforms test ## CI gate: formatting + vet + platform matrix + tests
+verify: fmtcheck vet check-platforms check-workflow test ## CI gate: formatting + vet + workflow/matrix drift + tests
 
 .PHONY: ci
 ci: verify ## Alias for `make verify`
