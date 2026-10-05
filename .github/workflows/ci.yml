@@ -119,6 +119,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # A release whose binaries report a different number than the tag they
+      # were published under is worse than no release: the version is what users
+      # file bugs against, and nothing downstream would notice. Cheap to check,
+      # and it must run BEFORE anything is built so the failure is unambiguous.
+      - name: Tag matches the version in the source and the changelog
+        run: make check-version EXPECTED="${GITHUB_REF_NAME#v}"
       - name: Stamp the binary with the tag, not the commit hash
         run: make release VERSION="${GITHUB_REF_NAME#v}"
       - uses: actions/upload-artifact@v4
