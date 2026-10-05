@@ -43,13 +43,23 @@ func configKeys() []string {
 // in file order.
 func documentedKeys(t *testing.T) []string {
 	t.Helper()
-	data, err := os.ReadFile(examplesReadme)
+	return documentedKeysFrom(t, examplesReadme)
+}
+
+func documentedKeysFrom(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v", examplesReadme, err)
+		t.Fatalf("read %s: %v", path, err)
 	}
 	var keys []string
 	inTable := false
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, raw := range strings.Split(string(data), "\n") {
+		// A checkout on Windows converts LF to CRLF (core.autocrlf defaults to
+		// true), so the heading arrives as "## Configuration keys\r" and an exact
+		// comparison never matches – the test then reports "0 keys parsed" and
+		// blames the row pattern, which is not what happened.
+		line := strings.TrimRight(raw, "\r")
 		if strings.HasPrefix(line, "## ") {
 			inTable = line == "## Configuration keys"
 			continue
@@ -203,4 +213,28 @@ func writeAt(t *testing.T, path, body string) {
 // depth and a genuinely large directory count, not one flat folder.
 func spreadDir(i int) string {
 	return "pkg/" + strconv.Itoa(i/25) + "/mod" + strconv.Itoa(i%25)
+}
+
+// TestDocumentedKeysSurviveCRLF is the regression lock for a bug the Windows CI
+// job found on the first run: a checkout with core.autocrlf converts the
+// markdown to CRLF, the "## Configuration keys" heading stopped matching, and
+// the drift test reported "0 keys parsed" – blaming the row pattern and hiding
+// the real cause. Any future parsing of a checked-out text file here has the
+// same trap.
+func TestDocumentedKeysSurviveCRLF(t *testing.T) {
+	src, err := os.ReadFile(examplesReadme)
+	if err != nil {
+		t.Fatalf("read %s: %v", examplesReadme, err)
+	}
+	crlf := filepath.Join(t.TempDir(), "README.md")
+	if err := os.WriteFile(crlf, []byte(strings.ReplaceAll(string(src), "\n", "\r\n")), 0o644); err != nil {
+		t.Fatalf("write CRLF copy: %v", err)
+	}
+	want := len(documentedKeys(t))
+	if want == 0 {
+		t.Fatal("no keys parsed from the LF original – nothing to compare against")
+	}
+	if got := len(documentedKeysFrom(t, crlf)); got != want {
+		t.Errorf("CRLF checkout parsed %d keys, LF parsed %d – the heading comparison must tolerate \\r", got, want)
+	}
 }
