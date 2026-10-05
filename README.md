@@ -450,6 +450,15 @@ container on the `{host_port, host_port+1}` pair, health-checks it and flips
 *   **There is no secrets manager.** `${VAR}` interpolation pulls values from the
     environment or a git-ignored `.easydrop.env`, but a literal
     `server.password` in the config is a secret in your repository.
+*   **File-permission protection is POSIX-only.** On Linux and macOS the MCP
+    server vault is written `0600` and the generated private key `0600`, and
+    both are asserted by tests. **On Windows those bits do not exist**: Go writes
+    every file as `0666` and access is governed by ACLs, which easydrop does not
+    set – so on a Windows machine the vault is readable by other local users.
+    Deploying *to* Windows is not supported at all (targets are Debian/Ubuntu);
+    this only affects easydrop running as an MCP server on a Windows host. Treat
+    that machine as one you would not share, or use `server.ssh_key` and skip
+    `manage_server` entirely.
 *   **Targets are Debian and Ubuntu**, on Docker Engine – no rootless Podman, no
     other container runtimes. A snap-confined Docker daemon is rejected with an
     explicit error (see the note in [Development](#development)).
