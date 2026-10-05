@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 )
@@ -189,6 +190,13 @@ func TestArchiveMissingDir(t *testing.T) {
 }
 
 func TestArchivePreservesModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows has no POSIX permission bits and Go reports 0666 for every
+		// regular file, so there is nothing to preserve and nothing to assert.
+		// The archive contents are still covered on Windows by the other tests
+		// in this file.
+		t.Skip("POSIX file modes do not exist on Windows")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "run.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0755); err != nil {
