@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -73,7 +74,7 @@ func (f *fakeExecutor) ranPrefix(prefix string) (string, bool) {
 }
 
 // readyHost returns a fake where everything is already installed and ufw
-// is absent — the minimal happy path.
+// is absent – the minimal happy path.
 func readyHost() *fakeExecutor {
 	return &fakeExecutor{remote: true, script: map[string]fakeResult{
 		"cat /etc/os-release":           ok(ubuntuRelease),
@@ -220,7 +221,7 @@ func TestBootstrapHaltsOnNonDebian(t *testing.T) {
 
 func TestBootstrapLocalWithoutOSReleaseProceeds(t *testing.T) {
 	// LocalExecutor with failing `cat` (macOS/Windows) must warn and proceed.
-	// Exercise checkOS through a local-backed fake: emulate by wrapping —
+	// Exercise checkOS through a local-backed fake: emulate by wrapping –
 	// here we test parse + flow via a local executor against a stub PATH?
 	// Deterministic unit approach: run checkOS with a fake that fails `cat`
 	// but reports itself as local. fakeExecutor is non-local, so instead
@@ -236,9 +237,14 @@ func TestBootstrapLocalWithoutOSReleaseProceeds(t *testing.T) {
 }
 
 func TestBootstrapRealLocalExecutor(t *testing.T) {
-	// Integration against the real LocalExecutor on this Linux dev box:
-	// only the OS check is asserted (docker may or may not exist here,
-	// and we must not install anything from a test).
+	// Integration against the real LocalExecutor on whatever host this is.
+	// Two outcomes are legitimate and the test asserts the one that applies here,
+	// because asserting only the Linux one made this fail on every macOS and
+	// Windows runner while proving nothing extra about Linux:
+	//   - a Debian/Ubuntu host, which detects the OS and logs its ID;
+	//   - a host without /etc/os-release, where the soft warning is the
+	//     documented behaviour (a macOS/Windows dev box).
+	// docker may or may not exist here, and we must not install anything.
 	b := New(core.NewLocalExecutor())
 	defer b.exec.Close()
 	var logBuf bytes.Buffer
@@ -246,8 +252,15 @@ func TestBootstrapRealLocalExecutor(t *testing.T) {
 	if err := b.checkOS(context.Background()); err != nil {
 		t.Fatalf("checkOS() on dev box: %v", err)
 	}
-	if !strings.Contains(logBuf.String(), "ID=") {
-		t.Errorf("expected OS detection log, got:\n%s", logBuf.String())
+	logged := logBuf.String()
+	if runtime.GOOS == "linux" {
+		if !strings.Contains(logged, "ID=") {
+			t.Errorf("expected OS detection log on linux, got:\n%s", logged)
+		}
+		return
+	}
+	if !strings.Contains(logged, "cannot read /etc/os-release") {
+		t.Errorf("expected the soft warning on a host without /etc/os-release, got:\n%s", logged)
 	}
 }
 
