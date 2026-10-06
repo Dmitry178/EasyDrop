@@ -1,5 +1,12 @@
 # EasyDrop
 
+[![release](https://img.shields.io/github/v/release/Dmitry178/EasyDrop?display_name=tag)](https://github.com/Dmitry178/EasyDrop/releases/latest)
+[![ci](https://img.shields.io/github/actions/workflow/status/Dmitry178/EasyDrop/ci.yml?label=CI)](https://github.com/Dmitry178/EasyDrop/actions/workflows/ci.yml)
+[![go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![platforms](https://img.shields.io/badge/binaries-linux%20%7C%20macOS%20%7C%20Windows-informational?label=platforms)](https://github.com/Dmitry178/EasyDrop/releases/latest)
+[![mcp](https://img.shields.io/badge/MCP-compatible-8A2BE2?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
+[![license](https://img.shields.io/github/license/Dmitry178/EasyDrop?label=license)](./LICENSE.md)
+
 **English** · [Russian](README_RU.md)
 
 **EasyDrop** is a lightweight CLI tool and Go-based MCP server designed to automate Docker application deployment to any Linux environment (localhost, VPS, bare-metal, or Raspberry Pi). 
